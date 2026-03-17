@@ -11,16 +11,25 @@ console.log('[LVB] Lovable Voice Builder content script loaded');
 
 const SELECTORS = {
   chatInput: [
+    // In-project chat
     'textarea[placeholder*="Ask"]',
     'textarea[placeholder*="ask"]',
     'textarea[placeholder*="prompt"]',
     'textarea[placeholder*="Prompt"]',
     'textarea[placeholder*="message"]',
     'textarea[placeholder*="Message"]',
+    // Homepage — "Ask Lovable to create a..."
+    'textarea[placeholder*="create"]',
+    'textarea[placeholder*="build"]',
+    // Rich-text editors
     'div[contenteditable="true"][data-lexical-editor]',
+    '[contenteditable="true"][placeholder*="Ask"]',
+    '[contenteditable="true"][data-placeholder*="Ask"]',
     'div[contenteditable="true"]',
+    // Data-testid fallbacks
     '[data-testid="chat-input"]',
     '[data-testid="prompt-input"]',
+    // Generic fallbacks
     '.prompt-input textarea',
     'form textarea',
     'main textarea'
@@ -30,7 +39,10 @@ const SELECTORS = {
     'button[aria-label*="Send"]',
     'button[aria-label*="send"]',
     'button[aria-label*="Submit"]',
+    'button[aria-label*="Create"]',
+    'button[aria-label*="Start"]',
     'button[data-testid*="send"]',
+    'button[data-testid*="submit"]',
     'form button:last-of-type',
     'main button:last-of-type'
   ],
@@ -62,16 +74,36 @@ function findElement(selectorList) {
 // ─── Prompt Injection ─────────────────────────────────────────────────────────
 
 function injectPrompt(text) {
+  // Diagnostic: log which selectors match on this page
+  const pageContext = window.location.pathname.includes('/projects/') ? 'project' : 'homepage';
+  console.log('[LVB] Injecting prompt on:', pageContext, window.location.pathname);
+  SELECTORS.chatInput.forEach(sel => {
+    try {
+      const el = document.querySelector(sel);
+      if (el) console.log('[LVB] ✓ Input matched:', sel, '→', el.tagName, el);
+    } catch {}
+  });
+  SELECTORS.sendButton.forEach(sel => {
+    try {
+      const el = document.querySelector(sel);
+      if (el) console.log('[LVB] ✓ Button matched:', sel, '→', el.tagName, el);
+    } catch {}
+  });
+
   const input = findElement(SELECTORS.chatInput);
 
   if (!input) {
-    console.error('[LVB] Could not find Lovable chat input. Is a project open?');
+    console.error('[LVB] Could not find Lovable chat input on', pageContext, 'page.');
     chrome.runtime.sendMessage({
       type: 'INJECTION_ERROR',
-      error: 'Chat input not found. Open a Lovable project first.'
+      error: pageContext === 'homepage'
+        ? 'Homepage input not found — try opening a project first.'
+        : 'Chat input not found. Open a Lovable project first.'
     });
     return false;
   }
+
+  console.log('[LVB] Using input:', input.tagName, input.placeholder || '');
 
   const tag = input.tagName.toUpperCase();
 

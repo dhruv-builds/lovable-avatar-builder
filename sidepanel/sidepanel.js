@@ -24,82 +24,86 @@ async function initializeAnam() {
   }
 
   try {
-    // CUSTOMER_CLIENT_V1 = BYO-brain mode.
-    // Anam handles: avatar rendering, lip-sync, TTS, STT.
-    // We handle: intelligence (Claude API via background SW).
-    anamClient = AnamAI.unsafe_createClientWithApiKey(CONFIG.ANAM_API_KEY, {
-      personaConfig: {
-        name: 'Builder',
-        avatarId: CONFIG.ANAM_AVATAR_ID,
-        voiceId: CONFIG.ANAM_VOICE_ID,
-        brainType: 'CUSTOMER_CLIENT_V1',
-        systemPrompt: '' // Not used in CUSTOMER_CLIENT_V1 mode
+    // ── Step 0: Try to get microphone permission (non-blocking) ──
+    // Chrome extension sidepanels may silently deny getUserMedia.
+    // We try, but continue regardless — text input still works without mic.
+    // To enable mic: chrome://settings/content/microphone → allow this extension.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      console.log('[LVB] Microphone permission granted');
+    } catch (micErr) {
+      console.warn('[LVB] Microphone not available:', micErr.message,
+        '— voice input disabled, text input still works.',
+        'To fix: chrome://settings/content/microphone');
+    }
+
+    // ── Step 1: Exchange API key for session token (production flow) ──
+    // Using createClient(sessionToken) instead of unsafe_createClientWithApiKey
+    // to avoid the legacy session type that causes engine 500 errors.
+    const tokenResp = await fetch('https://api.anam.ai/v1/auth/session-token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${CONFIG.ANAM_API_KEY}`
+      },
+      body: JSON.stringify({
+        personaConfig: {
+          name: 'Builder',
+          avatarId: CONFIG.ANAM_AVATAR_ID,
+          voiceId: CONFIG.ANAM_VOICE_ID,
+          llmId: 'CUSTOMER_CLIENT_V1',
+          systemPrompt: ''
+        }
+      })
+    });
+    const tokenBody = await tokenResp.text();
+    console.log('[LVB] Session token API:', tokenResp.status, tokenBody);
+    if (!tokenResp.ok) {
+      updateStatus('error', `Anam API ${tokenResp.status}: ${tokenBody.slice(0, 100)}`);
+      updateAvatarStateLabel(`API ${tokenResp.status}`);
+      return;
+    }
+    const { sessionToken } = JSON.parse(tokenBody);
+    console.log('[LVB] Session token obtained, creating client…');
+
+    // ── Step 2: Create client with session token ──
+    anamClient = AnamAI.createClient(sessionToken);
+
+    // ── Step 3: Stream avatar to video element ──
+    await anamClient.streamToVideoElement('avatar-video');
+
+    // ── Event listeners (SDK v4 uses addListener + AnamEvent enum) ────────
+    const AnamEvent = AnamAI.AnamEvent;
+
+    anamClient.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
+      // Fires when user finishes speaking — messages array has full history
+      const last = messages[messages.length - 1];
+      if (last && last.role === 'user' && isListening) {
+        handleUserSpeech(last.content);
       }
     });
 
-    // ── Diagnostic: test Anam API key before SDK call ──
-    try {
-      const diagResp = await fetch('https://api.anam.ai/v1/session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${CONFIG.ANAM_API_KEY}`
-        },
-        body: JSON.stringify({
-          avatarId: CONFIG.ANAM_AVATAR_ID,
-          voiceId: CONFIG.ANAM_VOICE_ID
-        })
-      });
-      const diagBody = await diagResp.text();
-      console.log('[LVB Diag] Anam session API:', diagResp.status, diagBody);
-      if (!diagResp.ok) {
-        updateStatus('error', `Anam API ${diagResp.status}: ${diagBody.slice(0, 80)}`);
-        updateAvatarStateLabel(`API ${diagResp.status}`);
-        return;
-      }
-    } catch (fetchErr) {
-      console.error('[LVB Diag] Anam API unreachable:', fetchErr);
-      updateStatus('error', 'Cannot reach Anam API: ' + fetchErr.message);
-      updateAvatarStateLabel('Network error');
-      return;
-    }
+    anamClient.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
+      console.log('[LVB Panel] Connection established');
+      updateStatus('listening', 'Listening — speak to build');
+      updateAvatarStateLabel('Live');
+    });
 
-    // Attach avatar video to the <video> element
-    await anamClient.streamToVideoElement('avatar-video');
+    anamClient.addListener(AnamEvent.CONNECTION_CLOSED, () => {
+      console.log('[LVB Panel] Connection closed');
+      updateStatus('idle', 'Disconnected');
+      updateAvatarStateLabel('Disconnected');
+    });
 
-    // ── Speech recognition callbacks ──────────────────────────────────────
-    // The Anam SDK may use different event names depending on version.
-    // We listen for both common patterns for compatibility.
+    anamClient.addListener(AnamEvent.MIC_PERMISSION_GRANTED, () => {
+      console.log('[LVB Panel] SDK mic permission granted');
+    });
 
-    if (typeof anamClient.on === 'function') {
-      anamClient.on('speech_recognized', (transcript) => {
-        const text = typeof transcript === 'string' ? transcript : transcript?.text;
-        if (text && isListening) {
-          handleUserSpeech(text);
-        }
-      });
-
-      anamClient.on('message', (message) => {
-        if (message?.type === 'user_speech' && isListening) {
-          handleUserSpeech(message.text);
-        }
-      });
-
-      anamClient.on('connection_established', () => {
-        updateStatus('listening', 'Listening — speak to build');
-        updateAvatarStateLabel('Live');
-      });
-
-      anamClient.on('connection_closed', () => {
-        updateStatus('idle', 'Disconnected');
-        updateAvatarStateLabel('Disconnected');
-      });
-
-      anamClient.on('error', (err) => {
-        console.error('[LVB Panel] Anam SDK error:', err);
-        updateStatus('error', 'Avatar error — check console');
-      });
-    }
+    anamClient.addListener(AnamEvent.MIC_PERMISSION_DENIED, () => {
+      console.warn('[LVB Panel] SDK mic permission denied');
+      updateStatus('error', 'Microphone blocked by browser');
+    });
 
     updateStatus('listening', 'Listening — speak to build');
     updateAvatarStateLabel('Live');
@@ -130,19 +134,11 @@ function handleUserSpeech(text) {
 function speakThroughAvatar(text) {
   if (!anamClient || !text) return;
 
-  // Try the most common CUSTOMER_CLIENT_V1 send methods.
-  // Consult https://docs.anam.ai and https://github.com/anam-org/clawd-face
-  // to confirm the exact method name for your SDK version.
   try {
-    if (typeof anamClient.sendMessage === 'function') {
-      anamClient.sendMessage(text);
-    } else if (typeof anamClient.speak === 'function') {
-      anamClient.speak(text);
-    } else if (typeof anamClient.streamText === 'function') {
-      anamClient.streamText(text);
-    } else {
-      console.warn('[LVB Panel] No speak method found on anamClient — check SDK docs.');
-    }
+    // SDK v4: use createTalkMessageStream for BYO-brain TTS
+    const talkStream = anamClient.createTalkMessageStream();
+    talkStream.streamMessageChunk(text);
+    talkStream.endMessage();
   } catch (err) {
     console.error('[LVB Panel] speakThroughAvatar error:', err);
   }

@@ -60,4 +60,27 @@ Track of major build milestones. Updated after each significant session.
 
 ---
 
+## Build 3 — SDK v4 session token flow & homepage selectors (2026-03-17)
+
+### What was built / changed
+- **`sidepanel/sidepanel.js`**: Replaced `unsafe_createClientWithApiKey` with production session-token flow — fetches token from `api.anam.ai/v1/auth/session-token`, then calls `AnamAI.createClient(sessionToken)`. Fixes engine 500 errors caused by the legacy session type
+- **`sidepanel/sidepanel.js`**: Switched from `.on()` event pattern to SDK v4 `addListener` + `AnamEvent` enum (`MESSAGE_HISTORY_UPDATED`, `CONNECTION_ESTABLISHED`, `CONNECTION_CLOSED`, `MIC_PERMISSION_GRANTED`, `MIC_PERMISSION_DENIED`)
+- **`sidepanel/sidepanel.js`**: Replaced guessed `sendMessage`/`speak`/`streamText` calls with SDK v4 `createTalkMessageStream()` API for BYO-brain TTS
+- **`sidepanel/sidepanel.js`**: Added upfront `getUserMedia({ audio: true })` check with graceful fallback — mic blocked in extension sidepanels doesn't crash init, text input still works
+- **`content/content-script.js`**: Expanded `SELECTORS.chatInput` with homepage-specific selectors (`textarea[placeholder*="create"]`, `textarea[placeholder*="build"]`), rich-text contenteditable variants, and data-testid fallbacks
+- **`content/content-script.js`**: Expanded `SELECTORS.sendButton` with "Create", "Start", and submit test-id selectors
+- **`content/content-script.js`**: Added diagnostic logging — on inject, logs page context (homepage vs project) and all matching selectors to console for debugging
+
+### Key decisions
+- Session token exchange (`/v1/auth/session-token`) is the correct production flow for Anam SDK v4 — `unsafe_createClientWithApiKey` uses a legacy session type that triggers server 500s
+- `llmId: 'CUSTOMER_CLIENT_V1'` replaces `brainType` in the persona config for the token endpoint
+- Mic permission failure is non-fatal — sidepanels often can't access mic, but voice output and text input still work
+
+### Known issues / next steps
+- Full end-to-end avatar streaming still needs live testing in Chrome
+- Homepage selector coverage is speculative — needs validation on actual lovable.dev homepage DOM
+- `MESSAGE_HISTORY_UPDATED` event needs testing to confirm it fires on user speech completion as expected
+
+---
+
 <!-- Add new builds below this line -->
