@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lovable Voice Builder</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Avatar container — Anam SDK renders video here -->
+    <div id="avatar-container">
+      <video id="avatar-video" autoplay playsinline></video>
+      <audio id="avatar-audio" autoplay></audio>
+      <div id="avatar-overlay">
+        <span id="avatar-state-label">Initializing…</span>
+      </div>
+    </div>
+
+    <!-- Status bar — shows what's happening -->
+    <div id="status-bar">
+      <div id="status-indicator" class="status-idle"></div>
+      <span id="status-text">Ready — speak to start building</span>
+    </div>
+
+    <!-- Last prompt display — shows what was sent to Lovable -->
+    <div id="last-prompt">
+      <div class="section-label">Last prompt sent to Lovable:</div>
+      <div id="prompt-text">—</div>
+    </div>
+
+    <!-- Controls -->
+    <div id="controls">
+      <button id="btn-toggle" class="control-btn">Pause</button>
+      <button id="btn-reset" class="control-btn secondary">Reset</button>
+    </div>
+
+    <!-- Manual text input fallback -->
+    <div id="manual-input">
+      <input type="text" id="text-input" placeholder="Or type your instruction here…" autocomplete="off">
+      <button id="btn-send" class="control-btn">Send</button>
+    </div>
+
+  </div>
+
+  <!-- Anam SDK — bundled locally to comply with Chrome MV3 (no remote scripts allowed) -->
+  <script src="anam-sdk.js"></script>
+  <script>var AnamAI = window.anam;</script>
+
+  <!-- Shared config must be loaded before sidepanel.js -->
+  <script src="../config.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Secrets — NEVER commit these
+config.js
+.env
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V7
+.Trashes
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Node (if build tooling is added later)
+node_modules/

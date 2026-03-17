@@ -1,0 +1,217 @@
+/* Lovable Voice Builder — Side Panel Styles */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0f0f11;
+  --bg-surface: #1a1a1e;
+  --bg-elevated: #242428;
+  --accent: #8b5cf6;
+  --accent-dim: #6d28d9;
+  --text-primary: #f1f1f3;
+  --text-secondary: #9a9aaa;
+  --text-muted: #555560;
+  --border: #2e2e38;
+  --status-idle: #3b3b48;
+  --status-listening: #10b981;
+  --status-processing: #f59e0b;
+  --status-building: #3b82f6;
+  --status-narrating: #8b5cf6;
+  --status-error: #ef4444;
+  --radius: 8px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────────── */
+
+#avatar-container {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+#avatar-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+#avatar-overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+}
+
+#avatar-state-label {
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 20px;
+  backdrop-filter: blur(4px);
+}
+
+/* ── Status Bar ──────────────────────────────────────────────────────────── */
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+#status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.status-idle       { background: var(--status-idle); }
+.status-listening  { background: var(--status-listening); box-shadow: 0 0 6px var(--status-listening); }
+.status-processing { background: var(--status-processing); box-shadow: 0 0 6px var(--status-processing); }
+.status-building   { background: var(--status-building); box-shadow: 0 0 6px var(--status-building); }
+.status-narrating  { background: var(--status-narrating); box-shadow: 0 0 6px var(--status-narrating); }
+.status-error      { background: var(--status-error); box-shadow: 0 0 6px var(--status-error); }
+
+#status-text {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Last Prompt ─────────────────────────────────────────────────────────── */
+
+#last-prompt {
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.section-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+#prompt-text {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* ── Controls ────────────────────────────────────────────────────────────── */
+
+#controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.control-btn:hover {
+  background: var(--accent-dim);
+}
+
+.control-btn:active {
+  transform: scale(0.97);
+}
+
+.control-btn.secondary {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.control-btn.secondary:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
+/* ── Manual Input ────────────────────────────────────────────────────────── */
+
+#manual-input {
+  display: flex;
+  gap: 6px;
+}
+
+#text-input {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+#text-input::placeholder {
+  color: var(--text-muted);
+}
+
+#text-input:focus {
+  border-color: var(--accent);
+}
+
+#btn-send {
+  flex-shrink: 0;
+  padding: 8px 14px;
+}
