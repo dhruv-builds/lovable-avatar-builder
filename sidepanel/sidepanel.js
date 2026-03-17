@@ -3,6 +3,8 @@
 
 // CONFIG is loaded from ../config.js via sidepanel.html
 // AnamAI is the global provided by the Anam SDK UMD bundle
+// Inline scripts are blocked by Chrome MV3 CSP — assign here instead
+var AnamAI = window.anam;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,33 @@ async function initializeAnam() {
         systemPrompt: '' // Not used in CUSTOMER_CLIENT_V1 mode
       }
     });
+
+    // ── Diagnostic: test Anam API key before SDK call ──
+    try {
+      const diagResp = await fetch('https://api.anam.ai/v1/session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${CONFIG.ANAM_API_KEY}`
+        },
+        body: JSON.stringify({
+          avatarId: CONFIG.ANAM_AVATAR_ID,
+          voiceId: CONFIG.ANAM_VOICE_ID
+        })
+      });
+      const diagBody = await diagResp.text();
+      console.log('[LVB Diag] Anam session API:', diagResp.status, diagBody);
+      if (!diagResp.ok) {
+        updateStatus('error', `Anam API ${diagResp.status}: ${diagBody.slice(0, 80)}`);
+        updateAvatarStateLabel(`API ${diagResp.status}`);
+        return;
+      }
+    } catch (fetchErr) {
+      console.error('[LVB Diag] Anam API unreachable:', fetchErr);
+      updateStatus('error', 'Cannot reach Anam API: ' + fetchErr.message);
+      updateAvatarStateLabel('Network error');
+      return;
+    }
 
     // Attach avatar video to the <video> element
     await anamClient.streamToVideoElement('avatar-video');
@@ -77,8 +106,9 @@ async function initializeAnam() {
 
   } catch (err) {
     console.error('[LVB Panel] Failed to initialize Anam:', err);
-    updateStatus('error', 'Failed to connect avatar — check console');
-    updateAvatarStateLabel('Error');
+    const msg = err?.message || err?.toString() || 'Unknown error';
+    updateStatus('error', 'Avatar failed: ' + msg);
+    updateAvatarStateLabel('Error: ' + msg.slice(0, 40));
   }
 }
 

@@ -39,4 +39,25 @@ Track of major build milestones. Updated after each significant session.
 
 ---
 
+## Build 2 — MV3 CSP fix, diagnostics, git/skill tooling (2026-03-17)
+
+### What was built / changed
+- **`sidepanel/sidepanel.js`**: Moved `var AnamAI = window.anam` from an inline `<script>` tag into the JS file — inline scripts are blocked by Chrome MV3 CSP, this was causing the avatar connection to silently fail
+- **`sidepanel/sidepanel.js`**: Added pre-flight diagnostic `fetch` to `api.anam.ai/v1/session` before SDK init — surfaces clear error messages (HTTP status + body) instead of a generic "Failed to connect avatar"
+- **`sidepanel/sidepanel.js`**: Improved catch block — now shows the actual error message in the status bar and avatar label instead of a generic fallback
+- **`sidepanel/sidepanel.html`**: Removed the inline `<script>var AnamAI = window.anam;</script>` tag (moved to sidepanel.js)
+- **`.claude/skills/commit-and-log.md`**: New end-of-session skill — reviews git diff, writes MEMORY.md entry, stages and commits. Invoke with `/commit-and-log`
+- **Git repo**: Initialized, `.gitignore` protecting secrets, pushed to `https://github.com/dhruv-builds/lovable-avatar-builder` (private)
+
+### Key decisions
+- `var AnamAI = window.anam` must live in a `.js` file, not an inline `<script>` — MV3 CSP blocks all inline scripts in extension pages
+- Pre-flight API check gives faster, clearer feedback when Anam credentials are wrong vs when the SDK itself fails
+
+### Known issues / next steps
+- Avatar connection still needs live testing with the extension loaded in Chrome — pre-flight fetch added but full SDK stream not yet confirmed working end-to-end
+- DOM selectors in `content/content-script.js` remain fragile — test prompt injection on lovable.dev
+- `/commit-and-log` skill requires a session restart to be auto-discovered by Claude Code
+
+---
+
 <!-- Add new builds below this line -->
