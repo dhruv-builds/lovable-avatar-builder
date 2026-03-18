@@ -1,4 +1,4 @@
-// Lovable Voice Builder — Side Panel Logic
+// Facetime Lovable Builder — Side Panel Logic
 // Handles Anam SDK initialization, speech events, and message routing.
 
 // CONFIG is loaded from ../config.js via sidepanel.html
@@ -9,7 +9,6 @@ var AnamAI = window.anam;
 // ─── State ────────────────────────────────────────────────────────────────────
 
 let anamClient = null;
-let isListening = true; // Toggled by Pause/Resume button
 
 // ─── Anam SDK Initialization ──────────────────────────────────────────────────
 
@@ -31,9 +30,9 @@ async function initializeAnam() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(track => track.stop());
-      console.log('[LVB] Microphone permission granted');
+      console.log('[FLB] Microphone permission granted');
     } catch (micErr) {
-      console.warn('[LVB] Microphone not available:', micErr.message,
+      console.warn('[FLB] Microphone not available:', micErr.message,
         '— voice input disabled, text input still works.',
         'To fix: chrome://settings/content/microphone');
     }
@@ -58,14 +57,14 @@ async function initializeAnam() {
       })
     });
     const tokenBody = await tokenResp.text();
-    console.log('[LVB] Session token API:', tokenResp.status, tokenBody);
+    console.log('[FLB] Session token API:', tokenResp.status, tokenBody);
     if (!tokenResp.ok) {
       updateStatus('error', `Anam API ${tokenResp.status}: ${tokenBody.slice(0, 100)}`);
       updateAvatarStateLabel(`API ${tokenResp.status}`);
       return;
     }
     const { sessionToken } = JSON.parse(tokenBody);
-    console.log('[LVB] Session token obtained, creating client…');
+    console.log('[FLB] Session token obtained, creating client…');
 
     // ── Step 2: Create client with session token ──
     anamClient = AnamAI.createClient(sessionToken);
@@ -79,29 +78,29 @@ async function initializeAnam() {
     anamClient.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
       // Fires when user finishes speaking — messages array has full history
       const last = messages[messages.length - 1];
-      if (last && last.role === 'user' && isListening) {
+      if (last && last.role === 'user') {
         handleUserSpeech(last.content);
       }
     });
 
     anamClient.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
-      console.log('[LVB Panel] Connection established');
+      console.log('[FLB Panel] Connection established');
       updateStatus('listening', 'Listening — speak to build');
       updateAvatarStateLabel('Live');
     });
 
     anamClient.addListener(AnamEvent.CONNECTION_CLOSED, () => {
-      console.log('[LVB Panel] Connection closed');
+      console.log('[FLB Panel] Connection closed');
       updateStatus('idle', 'Disconnected');
       updateAvatarStateLabel('Disconnected');
     });
 
     anamClient.addListener(AnamEvent.MIC_PERMISSION_GRANTED, () => {
-      console.log('[LVB Panel] SDK mic permission granted');
+      console.log('[FLB Panel] SDK mic permission granted');
     });
 
     anamClient.addListener(AnamEvent.MIC_PERMISSION_DENIED, () => {
-      console.warn('[LVB Panel] SDK mic permission denied');
+      console.warn('[FLB Panel] SDK mic permission denied');
       updateStatus('error', 'Microphone blocked by browser');
     });
 
@@ -109,7 +108,7 @@ async function initializeAnam() {
     updateAvatarStateLabel('Live');
 
   } catch (err) {
-    console.error('[LVB Panel] Failed to initialize Anam:', err);
+    console.error('[FLB Panel] Failed to initialize Anam:', err);
     const msg = err?.message || err?.toString() || 'Unknown error';
     updateStatus('error', 'Avatar failed: ' + msg);
     updateAvatarStateLabel('Error: ' + msg.slice(0, 40));
@@ -126,7 +125,7 @@ function handleUserSpeech(text) {
   // Debounce rapid speech events (e.g. Anam SDK fires multiple times)
   clearTimeout(speechDebounceTimer);
   speechDebounceTimer = setTimeout(() => {
-    console.log('[LVB Panel] User said:', text);
+    console.log('[FLB Panel] User said:', text);
     debugLog('→ USER_SPEECH', text);
     updateStatus('processing', 'Thinking…');
 
@@ -148,7 +147,7 @@ function speakThroughAvatar(text) {
     talkStream.streamMessageChunk(text);
     talkStream.endMessage();
   } catch (err) {
-    console.error('[LVB Panel] speakThroughAvatar error:', err);
+    console.error('[FLB Panel] speakThroughAvatar error:', err);
   }
 }
 
@@ -324,14 +323,14 @@ if (!CONFIG.MOCK_MODE && (!CONFIG.ANTHROPIC_API_KEY || CONFIG.ANTHROPIC_API_KEY 
   // Avatar is optional — text input always works.
   // If Anam key is missing/expired, skip avatar and go straight to text mode.
   if (!CONFIG.ANAM_API_KEY || CONFIG.ANAM_API_KEY === 'YOUR_ANAM_API_KEY') {
-    console.log('[LVB] No Anam API key — running in text-only mode');
+    console.log('[FLB] No Anam API key — running in text-only mode');
     collapseAvatar('Text mode');
     updateStatus('listening', 'Text mode — type below to build');
     addChatMessage('system', 'Text mode — avatar unavailable');
   } else {
     initializeAnam().catch(err => {
       // Avatar failed but text mode still works
-      console.warn('[LVB] Avatar init failed, continuing in text mode:', err.message);
+      console.warn('[FLB] Avatar init failed, continuing in text mode:', err.message);
       collapseAvatar('Unavailable');
       updateStatus('listening', 'Text mode — type below to build');
       addChatMessage('system', 'Avatar unavailable — using text chat');

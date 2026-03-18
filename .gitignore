@@ -21,3 +21,11 @@ npm-debug.log*
 
 # Node (if build tooling is added later)
 node_modules/
+
+# Dev artifacts — not for public distribution
+MEMORY.md
+CONTEXT.md
+launch-chrome-debug.sh
+.mcp.json
+.claude/
+screenshot-*.png

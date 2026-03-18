@@ -17,5 +17,9 @@ const CONFIG = {
   // Behavior — adjust as needed
   DEBOUNCE_MS: 1500,           // How long to wait after Lovable stops updating
   MAX_SPEECH_LENGTH: 500,       // Max chars to send to avatar for narration
-  MAX_CONVERSATION_HISTORY: 20  // Max messages to keep in context for Claude
+  MAX_CONVERSATION_HISTORY: 20, // Max messages to keep in context for Claude
+
+  // Development — set to true for testing without API keys
+  MOCK_MODE: false,             // Bypass API calls with canned responses
+  DEBUG_LOG: false              // Show debug panel in side panel
 };

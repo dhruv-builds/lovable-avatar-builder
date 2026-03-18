@@ -1,9 +1,9 @@
-// Lovable Voice Builder — Content Script
+// Facetime Lovable Builder — Content Script
 // Runs on lovable.dev. Two responsibilities:
 //   1. Inject reformulated prompts into Lovable's chat input and submit them.
 //   2. Watch Lovable's chat for new responses and relay them to the avatar.
 
-console.log('[LVB] Lovable Voice Builder content script loaded');
+console.log('[FLB] Facetime Lovable Builder content script loaded');
 
 // ─── Selectors ────────────────────────────────────────────────────────────────
 // These are tried in order. The first match wins.
@@ -132,7 +132,7 @@ function detectBuildState() {
 
   if (newState !== lovableBuildState) {
     lovableBuildState = newState;
-    console.log('[LVB] Build state changed:', newState, detail || '');
+    console.log('[FLB] Build state changed:', newState, detail || '');
     chrome.runtime.sendMessage({
       type: 'LOVABLE_STATUS',
       status: newState,
@@ -167,7 +167,7 @@ function detectBuildState() {
           if (text.toLowerCase().includes(pattern.toLowerCase())) {
             lastBuildFailReported = true;
             const errorSnippet = text.substring(0, 200).trim();
-            console.log('[LVB] Build failure detected:', errorSnippet);
+            console.log('[FLB] Build failure detected:', errorSnippet);
             chrome.runtime.sendMessage({
               type: 'BUILD_FAILED',
               error: errorSnippet
@@ -191,24 +191,24 @@ function startBuildStatePolling() {
 function injectPrompt(text) {
   // Diagnostic: log which selectors match on this page
   const pageContext = window.location.pathname.includes('/projects/') ? 'project' : 'homepage';
-  console.log('[LVB] Injecting prompt on:', pageContext, window.location.pathname);
+  console.log('[FLB] Injecting prompt on:', pageContext, window.location.pathname);
   SELECTORS.chatInput.forEach(sel => {
     try {
       const el = document.querySelector(sel);
-      if (el) console.log('[LVB] ✓ Input matched:', sel, '→', el.tagName, el);
+      if (el) console.log('[FLB] ✓ Input matched:', sel, '→', el.tagName, el);
     } catch {}
   });
   SELECTORS.sendButton.forEach(sel => {
     try {
       const el = document.querySelector(sel);
-      if (el) console.log('[LVB] ✓ Button matched:', sel, '→', el.tagName, el);
+      if (el) console.log('[FLB] ✓ Button matched:', sel, '→', el.tagName, el);
     } catch {}
   });
 
   const input = findElement(SELECTORS.chatInput);
 
   if (!input) {
-    console.error('[LVB] Could not find Lovable chat input on', pageContext, 'page.');
+    console.error('[FLB] Could not find Lovable chat input on', pageContext, 'page.');
     chrome.runtime.sendMessage({
       type: 'INJECTION_ERROR',
       error: pageContext === 'homepage'
@@ -218,7 +218,7 @@ function injectPrompt(text) {
     return false;
   }
 
-  console.log('[LVB] Using input:', input.tagName, input.placeholder || '');
+  console.log('[FLB] Using input:', input.tagName, input.placeholder || '');
 
   const tag = input.tagName.toUpperCase();
 
@@ -259,9 +259,9 @@ function injectPrompt(text) {
       if (content === text || content.includes(text)) {
         injected = true;
       }
-      console.log('[LVB] Paste event dispatched, injected:', injected, 'content:', content.substring(0, 50));
+      console.log('[FLB] Paste event dispatched, injected:', injected, 'content:', content.substring(0, 50));
     } catch (e) {
-      console.log('[LVB] Paste event failed:', e.message);
+      console.log('[FLB] Paste event failed:', e.message);
       injected = false;
     }
 
@@ -270,7 +270,7 @@ function injectPrompt(text) {
       try {
         document.execCommand('selectAll', false, null);
         document.execCommand('insertText', false, text);
-        console.log('[LVB] execCommand insertText used');
+        console.log('[FLB] execCommand insertText used');
       } catch {
         // Strategy 3: Direct DOM manipulation (last resort)
         input.textContent = text;
@@ -279,12 +279,12 @@ function injectPrompt(text) {
           inputType: 'insertText',
           data: text
         }));
-        console.log('[LVB] Direct textContent manipulation used');
+        console.log('[FLB] Direct textContent manipulation used');
       }
     }
 
   } else {
-    console.warn('[LVB] Unknown input element type:', tag);
+    console.warn('[FLB] Unknown input element type:', tag);
     return false;
   }
 
@@ -293,7 +293,7 @@ function injectPrompt(text) {
   suppressObserver = true;
   setTimeout(() => {
     suppressObserver = false;
-    console.log('[LVB] Observer suppression window ended');
+    console.log('[FLB] Observer suppression window ended');
   }, 3000);
 
   // Brief delay to let React update before we click Send
@@ -342,7 +342,7 @@ function initializeObserver() {
     if (container) {
       clearInterval(pollInterval);
       startObserving(container);
-      console.log('[LVB] MutationObserver attached to Lovable chat container');
+      console.log('[FLB] MutationObserver attached to Lovable chat container');
     }
   }, 1000);
 }
@@ -382,7 +382,7 @@ function startObserving(container) {
     if (!document.contains(container)) {
       parentObserver.disconnect();
       observer.disconnect();
-      console.log('[LVB] Chat container removed — re-initializing observer');
+      console.log('[FLB] Chat container removed — re-initializing observer');
       initializeObserver();
     }
   });
@@ -419,7 +419,7 @@ function extractLatestResponse(container) {
       const promptStart = lastInjectedPrompt.substring(0, 100).toLowerCase();
       const responseStart = text.substring(0, 100).toLowerCase();
       if (responseStart.includes(promptStart) || promptStart.includes(responseStart)) {
-        console.log('[LVB] Skipping echo of injected prompt');
+        console.log('[FLB] Skipping echo of injected prompt');
         lastInjectedPrompt = null; // Clear after matching once
         return;
       }
@@ -430,7 +430,7 @@ function extractLatestResponse(container) {
     if (hash === lastMessageHash) return;
     lastMessageHash = hash;
 
-    console.log('[LVB] Lovable response extracted:', text.substring(0, 80) + '…');
+    console.log('[FLB] Lovable response extracted:', text.substring(0, 80) + '…');
 
     chrome.runtime.sendMessage({
       type: 'LOVABLE_RESPONSE',
@@ -514,10 +514,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     document.querySelector('button[title*="Stop"]');
     if (stopBtn) {
       stopBtn.click();
-      console.log('[LVB] Stop button clicked');
+      console.log('[FLB] Stop button clicked');
       chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: true });
     } else {
-      console.log('[LVB] Stop button not found');
+      console.log('[FLB] Stop button not found');
       chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: false });
     }
     sendResponse({ received: true });

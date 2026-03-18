@@ -1,43 +1,92 @@
-# Lovable Voice Builder
+# 🎙️ Facetime Lovable Builder
 
-A Chrome extension that lets you build apps on [Lovable.dev](https://lovable.dev) using your voice. Speak a casual instruction to an AI avatar — it reformulates it into an optimized Lovable prompt via Claude, injects it into the chat, and narrates Lovable's response back to you.
+> **Build web apps with your voice — powered by AI.**
 
----
+A Chrome extension that lets you talk to an AI avatar to build apps on [Lovable.dev](https://lovable.dev). Speak a casual instruction, and the avatar reformulates it into an optimized prompt via Claude, injects it into Lovable's chat, and narrates Lovable's response back to you — hands-free.
 
-## How It Works
-
-```
-You speak
-    ↓
-Anam.ai avatar (side panel) captures speech
-    ↓
-Background service worker sends to Claude API
-    ↓
-Claude reformulates speech → structured Lovable prompt
-    ↓
-Content script injects prompt into lovable.dev chat + hits send
-    ↓
-MutationObserver captures Lovable's response
-    ↓
-Avatar narrates the response back to you
-```
+<!-- 🖼️ HERO SCREENSHOT — Replace with a screenshot of the extension side panel with the avatar active -->
+<!-- ![Facetime Lovable Builder](docs/screenshot-hero.png) -->
 
 ---
 
-## Prerequisites
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🗣️ **Voice-Powered Building** | Speak naturally to an AI avatar — it captures your speech and drives Lovable for you |
+| 🧠 **Intelligent Prompt Engineering** | Claude reformulates casual speech into optimized Lovable prompts |
+| 🧹 **Response Summarization** | Raw DOM output is cleaned and summarized into natural conversational sentences |
+| 🔄 **Auto-Recovery** | Detects build failures and automatically asks Lovable to diagnose and fix them |
+| 🛑 **Voice Stop Command** | Say "stop" or "cancel" to immediately halt Lovable's current build |
+| ⌨️ **Text Fallback** | Full functionality without a microphone — type instructions in the chat input |
+| 🎭 **Avatar Optional** | Works in text-only mode when Anam credentials are unavailable |
+
+---
+
+## 🎬 Demo
+
+<!-- 🎥 DEMO GIF — Replace with a GIF or video showing the full voice pipeline in action -->
+<!-- ![Demo](docs/demo.gif) -->
+
+*Coming soon — a recorded demo of the full voice pipeline with avatar.*
+
+---
+
+## 🏗️ How It Works
+
+```
+  You speak (or type)
+       ↓
+  Anam.ai avatar captures speech          ← Side Panel
+       ↓
+  Service worker sends to Claude API       ← Background
+       ↓
+  Claude reformulates → Lovable prompt
+       ↓
+  Content script injects into Lovable      ← lovable.dev tab
+       ↓
+  MutationObserver captures response
+       ↓
+  Claude summarizes the raw response
+       ↓
+  Avatar narrates clean summary back       ← Side Panel
+```
+
+### 🧩 Component Map
+
+| Component | File | Role |
+|-----------|------|------|
+| **Side Panel** | `sidepanel/` | Avatar video, chat UI, text input, status bar |
+| **Service Worker** | `background/service-worker.js` | Message router, Claude API client, conversation history |
+| **Content Script** | `content/content-script.js` | DOM injection, response capture, build state detection |
+| **Anam SDK** | `sidepanel/anam-sdk.js` | Avatar rendering, lip-sync, TTS (bundled locally for MV3) |
+| **Config** | `config.js` | API keys and behavior settings (gitignored) |
+
+---
+
+## 📋 Prerequisites
 
 | Requirement | Notes |
 |-------------|-------|
-| Google Chrome | v114+ (Manifest V3 support) |
-| [Anam.ai account](https://lab.anam.ai/) | Free tier available — get API key + avatar/voice IDs |
-| [Anthropic account](https://console.anthropic.com/) | Claude API key |
-| A [Lovable.dev](https://lovable.dev) project | Must be open in Chrome when using the extension |
+| **Google Chrome** | v114+ (Manifest V3 support) |
+| **[Anam.ai](https://lab.anam.ai/)** account | Free tier available — provides avatar + voice |
+| **[Anthropic](https://console.anthropic.com/)** account | Claude API key for prompt engineering |
+| **[Lovable.dev](https://lovable.dev)** project | Must be open in Chrome when using the extension |
 
 ---
 
-## Setup
+## 🚀 Quick Start
 
-### Option A — Edit config directly (simplest)
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/dhruv-builds/lovable-avatar-builder.git
+cd lovable-avatar-builder
+```
+
+### 2. Configure API keys
+
+**Option A — Edit directly (simplest)**
 
 ```bash
 cp config.example.js config.js
@@ -48,96 +97,83 @@ Open `config.js` and fill in your values:
 ```javascript
 const CONFIG = {
   ANAM_API_KEY: 'your-anam-api-key',
-  ANAM_AVATAR_ID: 'your-avatar-id',    // from lab.anam.ai → Avatars
-  ANAM_VOICE_ID: 'your-voice-id',      // from lab.anam.ai → Voices
+  ANAM_AVATAR_ID: 'your-avatar-id',
+  ANAM_VOICE_ID: 'your-voice-id',
   ANTHROPIC_API_KEY: 'your-anthropic-key',
-  // ... leave the rest as-is
+  // ...
 };
 ```
 
-### Option B — Use .env (recommended for developers)
+**Option B — Use .env (recommended)**
 
 ```bash
 cp .env.example .env
 # Edit .env with your values, then:
 chmod +x generate-config.sh
-./generate-config.sh    # generates config.js from .env
+./generate-config.sh
 ```
 
-> `config.js` and `.env` are both gitignored — your keys will never be committed.
+> 🔒 Both `config.js` and `.env` are gitignored — your keys will never be committed.
+
+### 3. Load the extension
+
+1. Open Chrome → `chrome://extensions`
+2. Enable **Developer Mode** (toggle, top-right)
+3. Click **Load unpacked** → select this project folder
+
+### 4. Start building
+
+1. Open a project on [lovable.dev](https://lovable.dev)
+2. Click the **Facetime Lovable Builder** icon in Chrome's toolbar
+3. The side panel opens — wait for "Listening" status
+4. Speak your instruction (or type it in the text input)
+5. Watch Lovable build — the avatar narrates the result
 
 ---
 
-## Getting Your API Keys
+## 🔑 Getting API Keys
 
-### Anam.ai
+### Anam.ai (Avatar + Voice)
+
 1. Sign up at [lab.anam.ai](https://lab.anam.ai/)
 2. Go to **API Keys** → copy your key
 3. Go to **Avatars** → pick one → copy its ID
 4. Go to **Voices** → pick one → copy its ID
 
-To list all available voices via API:
 ```bash
+# List available voices via API
 curl https://api.anam.ai/v1/voices -H "Authorization: Bearer YOUR_ANAM_API_KEY"
 ```
 
-### Anthropic
+### Anthropic (Claude)
+
 1. Sign up at [console.anthropic.com](https://console.anthropic.com/)
 2. Go to **API Keys** → create a new key → copy it
 
 ---
 
-## Install the Extension
-
-1. Open Chrome and go to `chrome://extensions`
-2. Enable **Developer Mode** (toggle, top-right)
-3. Click **Load unpacked**
-4. Select the `lovable-voice-builder/` folder
-
-The extension icon appears in your toolbar.
-
----
-
-## Usage
-
-1. Open a project on [lovable.dev](https://lovable.dev)
-2. Click the **Lovable Voice Builder** icon in Chrome toolbar
-3. The side panel opens with the avatar
-4. Wait for the status to show **Listening**
-5. Speak your instruction (e.g. "add a dark mode toggle to the settings page")
-6. Claude reformulates it → prompt is injected into Lovable's chat → Lovable builds
-7. The avatar narrates Lovable's response back to you
-
-### Controls
-
-| Button | Action |
-|--------|--------|
-| **Pause** | Stop listening (avatar stays connected) |
-| **Resume** | Start listening again |
-| **Reset** | Clear conversation history and restart |
-| Text input + **Send** | Type manually if speech isn't working |
-
----
-
-## File Structure
+## 🗂️ File Structure
 
 ```
-lovable-voice-builder/
-├── manifest.json              # Chrome Extension MV3 config
-├── config.js                  # YOUR local config (gitignored — never committed)
-├── config.example.js          # Template — copy to config.js
-├── .env.example               # .env template for generate-config.sh
+facetime-lovable-builder/
+├── manifest.json              # Chrome Extension Manifest V3
+├── config.example.js          # Config template — copy to config.js
+├── .env.example               # Environment variable template
 ├── generate-config.sh         # Generates config.js from .env
-├── MEMORY.md                  # Project build history
+├── LICENSE                    # MIT License
+│
 ├── background/
-│   └── service-worker.js      # Message router + Claude API client
+│   └── service-worker.js      # Message routing + Claude API integration
+│
 ├── sidepanel/
-│   ├── sidepanel.html         # Side panel UI
+│   ├── sidepanel.html         # Side panel UI layout
 │   ├── sidepanel.css          # Dark theme styles
-│   ├── sidepanel.js           # Anam SDK init + speech handling
-│   └── anam-sdk.js            # Anam SDK bundled locally (MV3 requires no remote scripts)
+│   ├── sidepanel.js           # Anam SDK init, speech handling, chat UI
+│   └── anam-sdk.js            # Anam SDK v4 (bundled locally for MV3 CSP)
+│
 ├── content/
 │   └── content-script.js      # DOM injection + response capture on lovable.dev
+│
 └── icons/
     ├── icon16.png
     ├── icon48.png
@@ -146,70 +182,89 @@ lovable-voice-builder/
 
 ---
 
-## Troubleshooting
+## 🎯 Controls
 
-### "Failed to connect avatar"
-- Right-click the side panel → **Inspect** → check Console for errors
+| Control | Action |
+|---------|--------|
+| **Text input + Send** | Type an instruction manually |
+| **Reset** | Clear conversation history and start fresh |
+| **Voice "stop"** | Say "stop", "cancel", or "halt" to stop Lovable's current build |
+
+> 💡 **Tip:** The extension works without a microphone — use the text input as your primary interface if voice isn't available.
+
+---
+
+## 🐛 Troubleshooting
+
+### Avatar won't connect
+- Check Console (right-click side panel → **Inspect**) for errors
 - Verify `ANAM_API_KEY` is correct in `config.js`
-- Verify your Anam account has API access at [lab.anam.ai](https://lab.anam.ai/)
+- Confirm your Anam account has available minutes at [lab.anam.ai](https://lab.anam.ai/)
 
-### Avatar loads but speech isn't injected into Lovable
-Lovable's DOM may have changed. Inspect `lovable.dev` and update the selectors in `content/content-script.js`:
-
-```javascript
-const SELECTORS = {
-  input: [...],        // textarea or contenteditable for chat input
-  sendButton: [...],   // submit/send button
-  chatContainer: [...]  // message list container
-};
-```
-
-### Extension changes not taking effect
-Go to `chrome://extensions` → click the **reload** icon on the extension after every code change.
+### Prompts not injected into Lovable
+Lovable's DOM selectors may have changed. Inspect `lovable.dev` in DevTools and update the `SELECTORS` object in [content-script.js](content/content-script.js).
 
 ### "No Lovable tab found"
-Make sure a lovable.dev project tab is open in the same Chrome window before clicking the extension icon.
+Make sure a `lovable.dev` tab is open **in the same Chrome window** before using the extension.
 
-### Wrong voice for avatar
-Change `ANAM_VOICE_ID` in `config.js`. List available voices:
+### Claude API errors
+Open the service worker console: `chrome://extensions` → click the **"Service Worker"** link under the extension → check for error messages.
+
+### Extension changes not taking effect
+After editing code, go to `chrome://extensions` → click the **reload** ↻ icon on the extension.
+
+### Wrong avatar voice
+Change `ANAM_VOICE_ID` in `config.js`:
 ```bash
 curl https://api.anam.ai/v1/voices -H "Authorization: Bearer YOUR_ANAM_API_KEY"
 ```
 
-### Claude API errors
-Check the service worker console: `chrome://extensions` → click **"Service Worker"** link under the extension.
-
 ---
 
-## Architecture Notes
+## 🔒 Security
 
-- **Chrome MV3** — Remote scripts are blocked. The Anam SDK is bundled locally as `sidepanel/anam-sdk.js` (from npm `@anam-ai/js-sdk@4.11.0`, `dist/umd/anam.js`). The global is aliased: `var AnamAI = window.anam`
-- **No build step** — Pure vanilla JS, loads directly in Chrome
-- **Anam brainType** — `CUSTOMER_CLIENT_V1` (bring-your-own-intelligence). Claude handles reasoning; Anam handles avatar rendering, lip-sync, and TTS
-- **React compatibility** — Content script uses native property setters + synthetic event dispatch to bypass React's synthetic event system when injecting text
+- `config.js` and `.env` are **gitignored** — your API keys are never committed
+- The Anam SDK is **bundled locally** (`sidepanel/anam-sdk.js`) — no remote script loading (required by Chrome MV3 CSP)
+- Claude API calls use the `anthropic-dangerous-direct-browser-access` header — acceptable for personal use
 
----
-
-## Security
-
-`config.js` and `.env` are gitignored. **Never push either file to a public repository.**
-
-For production or team use:
+**For production / team use:**
 - Proxy Anthropic API calls through your own backend
-- Generate Anam session tokens server-side and pass them to the extension
+- Generate Anam session tokens server-side
 
 ---
 
-## Contributing
+## 🛠️ Development
+
+### Mock Mode
+
+Test the full UI without API keys:
+
+```javascript
+// In config.js
+MOCK_MODE: true,   // Bypasses API calls with canned responses
+DEBUG_LOG: true     // Shows debug panel in side panel
+```
+
+### Architecture Notes
+
+- **Chrome Manifest V3** — no remote scripts, service worker instead of background page
+- **No build step** — pure vanilla JS, loads directly in Chrome
+- **Anam SDK v4** — uses `createClient(sessionToken)` production flow with `llmId: 'CUSTOMER_CLIENT_V1'` (bring-your-own-intelligence mode)
+- **React compatibility** — content script uses native property setters + synthetic event dispatch to bypass React's synthetic event system
+- **TipTap injection** — synthetic paste events for ProseMirror-based editors
+
+---
+
+## 🤝 Contributing
 
 1. Fork the repo
-2. Set up config: `cp config.example.js config.js` and fill in your keys
+2. Configure: `cp config.example.js config.js` and fill in your keys
 3. Load the extension in Chrome (Developer Mode → Load unpacked)
-4. Make changes, reload extension at `chrome://extensions`, test on lovable.dev
+4. Make changes → reload extension at `chrome://extensions` → test on lovable.dev
 5. Open a PR
 
 ---
 
-## License
+## 📄 License
 
-MIT
+[MIT](LICENSE) — Dhruv Sondhi

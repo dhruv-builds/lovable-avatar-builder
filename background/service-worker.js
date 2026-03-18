@@ -1,4 +1,4 @@
-// Lovable Voice Builder — Background Service Worker
+// Facetime Lovable Builder — Background Service Worker
 // Responsibilities:
 //  - Open side panel when extension icon is clicked
 //  - Route messages between side panel and content script
@@ -79,7 +79,7 @@ let autoRetryUsed = false;
 chrome.storage.session.get('conversationHistory', (result) => {
   if (result.conversationHistory) {
     conversationHistory = result.conversationHistory;
-    console.log('[LVB SW] Restored', conversationHistory.length, 'history entries from session storage');
+    console.log('[FLB SW] Restored', conversationHistory.length, 'history entries from session storage');
   }
 });
 
@@ -99,7 +99,7 @@ chrome.action.onClicked.addListener((tab) => {
 async function reformulateWithClaude(userSpeech) {
   // Mock mode — return canned responses without calling Claude API
   if (CONFIG.MOCK_MODE) {
-    console.log('[LVB SW] MOCK MODE — skipping Claude API');
+    console.log('[FLB SW] MOCK MODE — skipping Claude API');
     const lower = userSpeech.toLowerCase();
     if (lower.includes('?') || lower.includes('what') || lower.includes('how') || lower.includes('which')) {
       return '[CLARIFY]: Could you be more specific about what you\'d like to build? For example, what features should it have and what style are you going for?';
@@ -162,7 +162,7 @@ async function reformulateWithClaude(userSpeech) {
 async function summarizeWithClaude(rawText, lastPrompt) {
   // Mock mode — pass through truncated text
   if (CONFIG.MOCK_MODE) {
-    console.log('[LVB SW] MOCK MODE — skipping summarize');
+    console.log('[FLB SW] MOCK MODE — skipping summarize');
     return rawText.length > 200 ? rawText.substring(0, 200) + '…' : rawText;
   }
 
@@ -230,7 +230,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // Block new prompts while Lovable is building (but not stop commands)
       if (lovableBuildState === 'building' && !isStopCommand) {
-        console.log('[LVB SW] Blocked prompt — Lovable is building:', lovableBuildDetail);
+        console.log('[FLB SW] Blocked prompt — Lovable is building:', lovableBuildDetail);
         broadcastToSidePanel({
           type: 'CLARIFICATION',
           text: `Lovable is still building${lovableBuildDetail ? ' (' + lovableBuildDetail + ')' : ''}. I'll let you know when it's done, then you can give your next instruction.`
@@ -252,7 +252,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           pendingSpeech = null;
           if (queued) processUserSpeech(queued);
         }, API_COOLDOWN_MS - elapsed);
-        console.log('[LVB SW] Rate limited — queued speech, will process in', API_COOLDOWN_MS - elapsed, 'ms');
+        console.log('[FLB SW] Rate limited — queued speech, will process in', API_COOLDOWN_MS - elapsed, 'ms');
         sendResponse({ received: true, queued: true });
         return true;
       }
@@ -276,12 +276,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       summarizeWithClaude(message.text, promptCtx)
         .then(summary => {
           if (summary) {
-            console.log('[LVB SW] Summarized response:', summary);
+            console.log('[FLB SW] Summarized response:', summary);
             broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: summary });
           }
         })
         .catch(err => {
-          console.error('[LVB SW] Summarize failed, using raw text:', err.message);
+          console.error('[FLB SW] Summarize failed, using raw text:', err.message);
           broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: message.text });
         });
 
@@ -295,7 +295,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       lovableBuildState = message.status;
       lovableBuildDetail = message.detail || '';
 
-      console.log('[LVB SW] Build state:', prevState, '→', message.status, lovableBuildDetail);
+      console.log('[FLB SW] Build state:', prevState, '→', message.status, lovableBuildDetail);
 
       // Notify sidepanel of state change
       broadcastToSidePanel({
@@ -328,7 +328,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Build failure — auto-retry once ────────────────────────────────────────
     case 'BUILD_FAILED': {
-      console.log('[LVB SW] Build failed:', message.error);
+      console.log('[FLB SW] Build failed:', message.error);
 
       if (autoRetryUsed) {
         // Already retried once — just report to user
@@ -417,7 +417,7 @@ function processUserSpeech(userText) {
       }
     })
     .catch(err => {
-      console.error('[LVB SW] Claude API error:', err);
+      console.error('[FLB SW] Claude API error:', err);
       broadcastToSidePanel({
         type: 'CLARIFICATION',
         text: "Sorry, I couldn't connect to Claude. Please check your API key in config.js."
@@ -436,26 +436,26 @@ function broadcastToSidePanel(message) {
 
 // Send a message to the content script running on Lovable
 function sendToLovableTab(message) {
-  console.log('[LVB SW] sendToLovableTab called. lovableTabId:', lovableTabId, 'message type:', message.type);
+  console.log('[FLB SW] sendToLovableTab called. lovableTabId:', lovableTabId, 'message type:', message.type);
 
   if (lovableTabId !== null) {
-    console.log('[LVB SW] Using cached tab ID:', lovableTabId);
+    console.log('[FLB SW] Using cached tab ID:', lovableTabId);
     chrome.tabs.sendMessage(lovableTabId, message)
-      .then(() => console.log('[LVB SW] Message delivered to tab', lovableTabId))
+      .then(() => console.log('[FLB SW] Message delivered to tab', lovableTabId))
       .catch(err => {
-        console.error('[LVB SW] Could not reach content script on cached tab:', lovableTabId, err.message);
+        console.error('[FLB SW] Could not reach content script on cached tab:', lovableTabId, err.message);
         // Cached tab may be stale — clear it and retry via query
         lovableTabId = null;
-        console.log('[LVB SW] Clearing stale tab ID, retrying via query…');
+        console.log('[FLB SW] Clearing stale tab ID, retrying via query…');
         sendToLovableTab(message);
       });
     return;
   }
 
   // Fallback: query for the active lovable.dev tab
-  console.log('[LVB SW] No cached tab ID — querying for Lovable tabs…');
+  console.log('[FLB SW] No cached tab ID — querying for Lovable tabs…');
   chrome.tabs.query({ url: ['https://lovable.dev/*', 'https://*.lovable.dev/*'] }, (tabs) => {
-    console.log('[LVB SW] Tab query returned', tabs.length, 'tabs:', tabs.map(t => `${t.id}:${t.url}${t.active ? ' (ACTIVE)' : ''}`).join(', '));
+    console.log('[FLB SW] Tab query returned', tabs.length, 'tabs:', tabs.map(t => `${t.id}:${t.url}${t.active ? ' (ACTIVE)' : ''}`).join(', '));
     if (tabs.length === 0) {
       broadcastToSidePanel({
         type: 'CLARIFICATION',
@@ -469,7 +469,7 @@ function sendToLovableTab(message) {
     const dashboardTab = tabs.find(t => t.url.includes('/dashboard'));
     const projectTab = tabs.find(t => t.url.includes('/projects/'));
     const bestTab = activeTab || dashboardTab || projectTab || tabs[0];
-    console.log('[LVB SW] Selected tab:', bestTab.id, bestTab.url);
+    console.log('[FLB SW] Selected tab:', bestTab.id, bestTab.url);
 
     lovableTabId = bestTab.id;
 
@@ -491,11 +491,11 @@ function tryTabsInOrder(tabs, message) {
   const tab = tabs[0];
   chrome.tabs.sendMessage(tab.id, message)
     .then(() => {
-      console.log('[LVB SW] Message delivered to tab', tab.id, tab.url);
+      console.log('[FLB SW] Message delivered to tab', tab.id, tab.url);
       lovableTabId = tab.id; // Cache the working tab
     })
     .catch(err => {
-      console.warn('[LVB SW] Tab', tab.id, 'unreachable:', err.message, '— trying next…');
+      console.warn('[FLB SW] Tab', tab.id, 'unreachable:', err.message, '— trying next…');
       tryTabsInOrder(tabs.slice(1), message);
     });
 }
