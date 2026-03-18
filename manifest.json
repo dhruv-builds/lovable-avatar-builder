@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Lovable Voice Builder",
+  "name": "Facetime Lovable Builder",
   "version": "0.1.0",
   "description": "Talk to an AI avatar to build apps on Lovable.dev",
   "permissions": [
     "sidePanel",
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "https://lovable.dev/*",
@@ -33,7 +34,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Open Lovable Voice Builder"
+    "default_title": "Open Facetime Lovable Builder"
   },
   "icons": {
     "16": "icons/icon16.png",

@@ -42,6 +42,12 @@
       <button id="btn-send" class="control-btn">Send</button>
     </div>
 
+    <!-- Debug log panel — visible when CONFIG.DEBUG_LOG is true -->
+    <div id="debug-panel" style="display:none">
+      <div class="section-label">Debug Log</div>
+      <pre id="debug-log" style="max-height:150px;overflow-y:auto;font-size:10px;background:#111;color:#0f0;padding:6px;border-radius:4px;margin:4px 0;white-space:pre-wrap;word-break:break-all;"></pre>
+    </div>
+
   </div>
 
   <!-- Anam SDK — bundled locally to comply with Chrome MV3 (no remote scripts allowed) -->

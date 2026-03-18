@@ -118,15 +118,23 @@ async function initializeAnam() {
 
 // ─── Speech Input ─────────────────────────────────────────────────────────────
 
+let speechDebounceTimer = null;
+
 function handleUserSpeech(text) {
   if (!text || !text.trim()) return;
-  console.log('[LVB Panel] User said:', text);
-  updateStatus('processing', 'Thinking…');
 
-  chrome.runtime.sendMessage({
-    type: 'USER_SPEECH',
-    text: text.trim()
-  });
+  // Debounce rapid speech events (e.g. Anam SDK fires multiple times)
+  clearTimeout(speechDebounceTimer);
+  speechDebounceTimer = setTimeout(() => {
+    console.log('[LVB Panel] User said:', text);
+    debugLog('→ USER_SPEECH', text);
+    updateStatus('processing', 'Thinking…');
+
+    chrome.runtime.sendMessage({
+      type: 'USER_SPEECH',
+      text: text.trim()
+    });
+  }, 500);
 }
 
 // ─── Avatar Speech Output ──────────────────────────────────────────────────────
@@ -150,24 +158,25 @@ chrome.runtime.onMessage.addListener((message) => {
   switch (message.type) {
 
     case 'CLARIFICATION':
-      // Avatar asks a clarifying question
+      debugLog('← CLARIFICATION', message.text);
       speakThroughAvatar(message.text);
       updateStatus('listening', 'Waiting for your answer…');
       break;
 
     case 'SPEAK_RESPONSE':
-      // Avatar narrates what Lovable replied
+      debugLog('← SPEAK_RESPONSE', message.text);
       speakThroughAvatar(message.text);
       updateStatus('narrating', 'Lovable is building…');
       break;
 
     case 'PROMPT_SENT':
-      // Show the reformulated prompt that was injected into Lovable
+      debugLog('← PROMPT_SENT', message.prompt);
       document.getElementById('prompt-text').textContent = message.prompt;
       updateStatus('building', 'Prompt sent — Lovable is building…');
       break;
 
     case 'LOVABLE_STATUS':
+      debugLog('← LOVABLE_STATUS', message.status);
       if (message.status === 'idle') {
         updateStatus('listening', 'Done — ready for next instruction');
       }
@@ -228,10 +237,36 @@ function updateAvatarStateLabel(text) {
   document.getElementById('avatar-state-label').textContent = text;
 }
 
+// ─── Debug Log ───────────────────────────────────────────────────────────────
+
+function debugLog(label, data) {
+  if (!CONFIG.DEBUG_LOG) return;
+  const panel = document.getElementById('debug-panel');
+  const log = document.getElementById('debug-log');
+  if (!panel || !log) return;
+
+  panel.style.display = 'block';
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const preview = typeof data === 'string' ? data.substring(0, 120) : JSON.stringify(data);
+  log.textContent += `[${time}] ${label}: ${preview}\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+// Show debug panel if enabled
+if (CONFIG.DEBUG_LOG) {
+  const panel = document.getElementById('debug-panel');
+  if (panel) panel.style.display = 'block';
+}
+
+// Show mock mode indicator
+if (CONFIG.MOCK_MODE) {
+  updateStatus('idle', 'MOCK MODE — no API calls');
+}
+
 // Validate Anthropic key at startup so the user knows early
-if (!CONFIG.ANTHROPIC_API_KEY || CONFIG.ANTHROPIC_API_KEY === 'YOUR_ANTHROPIC_API_KEY') {
+if (!CONFIG.MOCK_MODE && (!CONFIG.ANTHROPIC_API_KEY || CONFIG.ANTHROPIC_API_KEY === 'YOUR_ANTHROPIC_API_KEY')) {
   updateStatus('error', 'Missing ANTHROPIC_API_KEY — update config.js');
 } else {
   initializeAnam();

@@ -83,4 +83,28 @@ Track of major build milestones. Updated after each significant session.
 
 ---
 
+## Build 4 — Rebrand, new icon, rate limiting & debug tooling (2026-03-18)
+
+### What was built / changed
+- **Rebrand**: Renamed extension from "Lovable Voice Builder" to "Facetime Lovable Builder" in `manifest.json` (name + default_title)
+- **New icon**: Replaced placeholder solid-color icons with AI avatar + speech wave design (generated via Google Image FX / Nano Banana Pro), resized to 16x16, 48x48, 128x128
+- **`manifest.json`**: Added `storage` permission for session persistence
+- **`background/service-worker.js`**: Added rate limiting (2s cooldown between Claude API calls), mock mode for testing without API keys, conversation history persistence via `chrome.storage.session`, proper multi-turn context (Claude responses stored separately from Lovable responses), extracted `processUserSpeech()` for cleaner message handling
+- **`sidepanel/sidepanel.js`**: Added speech debouncing (500ms) to prevent Anam SDK rapid-fire events, debug log panel (toggled via `CONFIG.DEBUG_LOG`), mock mode status indicator, improved startup validation (skips API key check in mock mode)
+- **`sidepanel/sidepanel.html`**: Added debug log panel UI (hidden by default, shown when `CONFIG.DEBUG_LOG` is true)
+- **`content/content-script.js`**: Deduplicated candidate elements in `extractLatestResponse()` using a `Set` to prevent duplicate processing
+
+### Key decisions
+- Rate limiting at the service worker level (not panel) — prevents API abuse regardless of input source
+- Mock mode (`CONFIG.MOCK_MODE`) enables full UI testing without Anthropic/Anam API keys
+- Conversation history persisted to `chrome.storage.session` — survives service worker restarts but clears on browser close
+- Claude's own responses now tracked as `from: 'claude'` in history for accurate multi-turn context
+
+### Known issues / next steps
+- Full end-to-end avatar streaming still needs live testing in Chrome
+- `config.js` needs `MOCK_MODE` and `DEBUG_LOG` fields added to `config.example.js`
+- Homepage selector coverage on lovable.dev still needs validation
+
+---
+
 <!-- Add new builds below this line -->

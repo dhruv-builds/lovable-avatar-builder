@@ -232,14 +232,19 @@ function startObserving(container) {
 }
 
 function extractLatestResponse(container) {
-  // Find all message-like elements in the container
+  // Find all message-like elements in the container (deduplicated)
+  const seen = new Set();
   const candidates = [
     ...container.querySelectorAll('[class*="message"]'),
     ...container.querySelectorAll('[class*="Message"]'),
     ...container.querySelectorAll('[role="listitem"]'),
     ...container.querySelectorAll('article'),
     ...container.children
-  ];
+  ].filter(el => {
+    if (seen.has(el)) return false;
+    seen.add(el);
+    return true;
+  });
 
   if (candidates.length === 0) return;
 

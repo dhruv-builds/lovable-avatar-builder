@@ -34,12 +34,32 @@ Output ONLY the prefixed prompt or clarification. No preamble, no explanation.`;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-// conversationHistory stores the full exchange: user speech + Lovable responses
-// [{ from: 'user'|'lovable', text: string }]
+// conversationHistory stores the full exchange: user speech, Claude responses, and Lovable responses
+// [{ from: 'user'|'claude'|'lovable', text: string }]
 let conversationHistory = [];
 
 // Track the active Lovable tab ID so we can send messages to the right content script
 let lovableTabId = null;
+
+// Rate limiting — prevent rapid-fire Claude API calls
+let lastApiCallTime = 0;
+let pendingSpeech = null;
+let rateLimitTimer = null;
+const API_COOLDOWN_MS = 2000; // Minimum 2s between API calls
+
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
+// Restore conversation history from session storage on startup
+chrome.storage.session.get('conversationHistory', (result) => {
+  if (result.conversationHistory) {
+    conversationHistory = result.conversationHistory;
+    console.log('[LVB SW] Restored', conversationHistory.length, 'history entries from session storage');
+  }
+});
+
+function persistHistory() {
+  chrome.storage.session.set({ conversationHistory });
+}
 
 // ─── Side Panel Setup ─────────────────────────────────────────────────────────
 
@@ -51,16 +71,40 @@ chrome.action.onClicked.addListener((tab) => {
 // ─── Claude API ───────────────────────────────────────────────────────────────
 
 async function reformulateWithClaude(userSpeech) {
+  // Mock mode — return canned responses without calling Claude API
+  if (CONFIG.MOCK_MODE) {
+    console.log('[LVB SW] MOCK MODE — skipping Claude API');
+    const lower = userSpeech.toLowerCase();
+    if (lower.includes('?') || lower.includes('what') || lower.includes('how') || lower.includes('which')) {
+      return '[CLARIFY]: Could you be more specific about what you\'d like to build? For example, what features should it have and what style are you going for?';
+    }
+    return `[PROMPT]: Create a React component that ${userSpeech}. Use Tailwind CSS for styling and shadcn/ui components. Make it responsive and visually polished.`;
+  }
+
   // Build messages array from conversation history
-  const messages = [
-    ...conversationHistory.map(entry => ({
-      role: entry.from === 'user' ? 'user' : 'assistant',
-      content: entry.from === 'lovable'
-        ? `[Lovable responded]: ${entry.text}`
-        : entry.text
-    })),
-    { role: 'user', content: userSpeech }
-  ];
+  // Mapping: user speech → role: 'user', claude output → role: 'assistant',
+  //          lovable responses → role: 'user' with prefix (so Claude sees them as context, not its own output)
+  // Claude API requires alternating user/assistant roles, so we merge consecutive same-role messages.
+  const rawMessages = conversationHistory.map(entry => {
+    if (entry.from === 'user') {
+      return { role: 'user', content: entry.text };
+    } else if (entry.from === 'claude') {
+      return { role: 'assistant', content: entry.text };
+    } else {
+      return { role: 'user', content: `[Lovable responded]: ${entry.text}` };
+    }
+  });
+  rawMessages.push({ role: 'user', content: userSpeech });
+
+  // Merge consecutive messages with the same role (API requires alternation)
+  const messages = [];
+  for (const msg of rawMessages) {
+    if (messages.length > 0 && messages[messages.length - 1].role === msg.role) {
+      messages[messages.length - 1].content += '\n' + msg.content;
+    } else {
+      messages.push({ ...msg });
+    }
+  }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -97,6 +141,7 @@ function addToHistory(from, text) {
       conversationHistory.length - CONFIG.MAX_CONVERSATION_HISTORY
     );
   }
+  persistHistory();
 }
 
 // ─── Message Routing ──────────────────────────────────────────────────────────
@@ -112,35 +157,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── User spoke → reformulate with Claude ──────────────────────────────────
     case 'USER_SPEECH': {
       const userText = message.text;
-      addToHistory('user', userText);
 
-      reformulateWithClaude(userText)
-        .then(claudeResponse => {
-          if (claudeResponse.startsWith('[CLARIFY]:')) {
-            const question = claudeResponse.replace('[CLARIFY]:', '').trim();
-            // Send clarification back to side panel → avatar speaks it
-            broadcastToSidePanel({ type: 'CLARIFICATION', text: question });
-          } else {
-            // Extract prompt (strip [PROMPT]: prefix if present)
-            const prompt = claudeResponse.startsWith('[PROMPT]:')
-              ? claudeResponse.replace('[PROMPT]:', '').trim()
-              : claudeResponse.trim();
+      // Rate limiting — prevent rapid-fire API calls
+      const now = Date.now();
+      const elapsed = now - lastApiCallTime;
 
-            // Notify side panel of what was sent
-            broadcastToSidePanel({ type: 'PROMPT_SENT', prompt });
+      if (elapsed < API_COOLDOWN_MS) {
+        // Queue this speech; discard any previously queued speech
+        clearTimeout(rateLimitTimer);
+        pendingSpeech = userText;
+        rateLimitTimer = setTimeout(() => {
+          const queued = pendingSpeech;
+          pendingSpeech = null;
+          if (queued) processUserSpeech(queued);
+        }, API_COOLDOWN_MS - elapsed);
+        console.log('[LVB SW] Rate limited — queued speech, will process in', API_COOLDOWN_MS - elapsed, 'ms');
+        sendResponse({ received: true, queued: true });
+        return true;
+      }
 
-            // Send prompt to content script for injection into Lovable
-            sendToLovableTab({ type: 'INJECT_PROMPT', prompt });
-          }
-        })
-        .catch(err => {
-          console.error('[LVB SW] Claude API error:', err);
-          broadcastToSidePanel({
-            type: 'CLARIFICATION',
-            text: "Sorry, I couldn't connect to Claude. Please check your API key in config.js."
-          });
-        });
-
+      processUserSpeech(userText);
       sendResponse({ received: true });
       return true; // Keep channel open for async
     }
@@ -173,11 +209,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Reset conversation ─────────────────────────────────────────────────────
     case 'RESET_CONVERSATION': {
       conversationHistory = [];
+      persistHistory();
       sendResponse({ received: true });
       return true;
     }
   }
 });
+
+// ─── Process Speech ──────────────────────────────────────────────────────────
+
+function processUserSpeech(userText) {
+  lastApiCallTime = Date.now();
+  addToHistory('user', userText);
+
+  reformulateWithClaude(userText)
+    .then(claudeResponse => {
+      // Store Claude's response in history for proper multi-turn context
+      addToHistory('claude', claudeResponse);
+
+      if (claudeResponse.startsWith('[CLARIFY]:')) {
+        const question = claudeResponse.replace('[CLARIFY]:', '').trim();
+        broadcastToSidePanel({ type: 'CLARIFICATION', text: question });
+      } else {
+        const prompt = claudeResponse.startsWith('[PROMPT]:')
+          ? claudeResponse.replace('[PROMPT]:', '').trim()
+          : claudeResponse.trim();
+
+        broadcastToSidePanel({ type: 'PROMPT_SENT', prompt });
+        sendToLovableTab({ type: 'INJECT_PROMPT', prompt });
+      }
+    })
+    .catch(err => {
+      console.error('[LVB SW] Claude API error:', err);
+      broadcastToSidePanel({
+        type: 'CLARIFICATION',
+        text: "Sorry, I couldn't connect to Claude. Please check your API key in config.js."
+      });
+    });
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
