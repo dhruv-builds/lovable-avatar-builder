@@ -24,6 +24,12 @@
       <span id="status-text">Ready — speak to start building</span>
     </div>
 
+    <!-- Response log — shows Claude responses and injection status -->
+    <div id="response-log">
+      <div class="section-label">Activity</div>
+      <div id="response-entries"></div>
+    </div>
+
     <!-- Last prompt display — shows what was sent to Lovable -->
     <div id="last-prompt">
       <div class="section-label">Last prompt sent to Lovable:</div>
@@ -36,9 +42,9 @@
       <button id="btn-reset" class="control-btn secondary">Reset</button>
     </div>
 
-    <!-- Manual text input fallback -->
+    <!-- Text input — primary input when avatar is unavailable -->
     <div id="manual-input">
-      <input type="text" id="text-input" placeholder="Or type your instruction here…" autocomplete="off">
+      <input type="text" id="text-input" placeholder="Type your instruction here…" autocomplete="off">
       <button id="btn-send" class="control-btn">Send</button>
     </div>
 

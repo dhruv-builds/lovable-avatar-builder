@@ -15,16 +15,17 @@ Lovable's AI builder.
 
 Rules:
 1. Convert casual speech into structured, specific Lovable prompts
-2. If the user says something vague like "make it look nicer", ask a clarifying question
-   instead of guessing. Return your clarifying question prefixed with [CLARIFY]:
-3. If the user gives clear instructions, return ONLY the Lovable prompt prefixed with [PROMPT]:
-4. Keep prompts concise but specific — Lovable works best with focused, single-task prompts
-5. Include technology preferences when relevant (React, Tailwind, shadcn/ui, Supabase)
-6. If the user is responding to a Lovable message (e.g., answering a question Lovable asked),
-   formulate the response as a direct answer
-7. Never include markdown formatting in the prompt — Lovable's input is plain text
-8. When the user describes a new app from scratch, structure the prompt with:
-   what the app does, key features, visual style preferences
+2. Bias toward action — if you can build something reasonable from what the user said,
+   generate a [PROMPT]: immediately with sensible defaults for anything unspecified.
+   Do NOT ask about visual style, tech stack, or minor details unless the user raised them.
+3. If the request is genuinely ambiguous (could mean very different things), ask ONE
+   short clarifying question prefixed with [CLARIFY]:. Never bundle multiple questions.
+4. You may ask at most 2 clarifying questions total for any single build request.
+   After 2 clarifications, generate the best [PROMPT]: you can with available info.
+5. Keep prompts concise but specific — Lovable works best with focused, single-task prompts
+6. Include technology preferences when relevant (React, Tailwind, shadcn/ui, Supabase)
+7. If the user is responding to a Lovable message, formulate the response as a direct answer
+8. Never include markdown formatting — plain text only
 9. For iterative changes, be specific about what component/section to modify
 
 You receive the full conversation history including what Lovable has said back. Use this
@@ -46,6 +47,10 @@ let lastApiCallTime = 0;
 let pendingSpeech = null;
 let rateLimitTimer = null;
 const API_COOLDOWN_MS = 2000; // Minimum 2s between API calls
+
+// Build state — track whether Lovable is actively building
+let lovableBuildState = 'idle'; // 'idle' | 'building'
+let lovableBuildDetail = '';
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
@@ -116,7 +121,7 @@ async function reformulateWithClaude(userSpeech) {
     },
     body: JSON.stringify({
       model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 1024,
+      max_tokens: 300,
       system: SYSTEM_PROMPT,
       messages: messages
     })
@@ -158,6 +163,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'USER_SPEECH': {
       const userText = message.text;
 
+      // Block new prompts while Lovable is building
+      if (lovableBuildState === 'building') {
+        console.log('[LVB SW] Blocked prompt — Lovable is building:', lovableBuildDetail);
+        broadcastToSidePanel({
+          type: 'CLARIFICATION',
+          text: `Lovable is still building${lovableBuildDetail ? ' (' + lovableBuildDetail + ')' : ''}. I'll let you know when it's done, then you can give your next instruction.`
+        });
+        sendResponse({ received: true, blocked: true });
+        return true;
+      }
+
       // Rate limiting — prevent rapid-fire API calls
       const now = Date.now();
       const elapsed = now - lastApiCallTime;
@@ -191,7 +207,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Status update from content script ─────────────────────────────────────
     case 'LOVABLE_STATUS': {
-      broadcastToSidePanel({ type: 'LOVABLE_STATUS', status: message.status });
+      const prevState = lovableBuildState;
+      lovableBuildState = message.status;
+      lovableBuildDetail = message.detail || '';
+
+      console.log('[LVB SW] Build state:', prevState, '→', message.status, lovableBuildDetail);
+
+      // Notify sidepanel of state change
+      broadcastToSidePanel({
+        type: 'LOVABLE_STATUS',
+        status: message.status,
+        detail: message.detail || ''
+      });
+
+      // If build just finished, send a ready notification
+      if (prevState === 'building' && message.status === 'idle') {
+        broadcastToSidePanel({
+          type: 'CLARIFICATION',
+          text: 'Lovable finished building. Ready for your next instruction.'
+        });
+      }
+
       sendResponse({ received: true });
       return true;
     }
@@ -259,19 +295,26 @@ function broadcastToSidePanel(message) {
 
 // Send a message to the content script running on Lovable
 function sendToLovableTab(message) {
+  console.log('[LVB SW] sendToLovableTab called. lovableTabId:', lovableTabId, 'message type:', message.type);
+
   if (lovableTabId !== null) {
-    chrome.tabs.sendMessage(lovableTabId, message).catch(err => {
-      console.error('[LVB SW] Could not reach content script:', err);
-      broadcastToSidePanel({
-        type: 'CLARIFICATION',
-        text: "Couldn't reach Lovable. Is a Lovable project open in this tab?"
+    console.log('[LVB SW] Using cached tab ID:', lovableTabId);
+    chrome.tabs.sendMessage(lovableTabId, message)
+      .then(() => console.log('[LVB SW] Message delivered to tab', lovableTabId))
+      .catch(err => {
+        console.error('[LVB SW] Could not reach content script on cached tab:', lovableTabId, err.message);
+        // Cached tab may be stale — clear it and retry via query
+        lovableTabId = null;
+        console.log('[LVB SW] Clearing stale tab ID, retrying via query…');
+        sendToLovableTab(message);
       });
-    });
     return;
   }
 
   // Fallback: query for the active lovable.dev tab
+  console.log('[LVB SW] No cached tab ID — querying for Lovable tabs…');
   chrome.tabs.query({ url: ['https://lovable.dev/*', 'https://*.lovable.dev/*'] }, (tabs) => {
+    console.log('[LVB SW] Tab query returned', tabs.length, 'tabs:', tabs.map(t => `${t.id}:${t.url}${t.active ? ' (ACTIVE)' : ''}`).join(', '));
     if (tabs.length === 0) {
       broadcastToSidePanel({
         type: 'CLARIFICATION',
@@ -279,9 +322,39 @@ function sendToLovableTab(message) {
       });
       return;
     }
-    lovableTabId = tabs[0].id;
-    chrome.tabs.sendMessage(lovableTabId, message).catch(err => {
-      console.error('[LVB SW] Could not reach content script (fallback):', err);
-    });
+
+    // Pick the best tab: prefer the active one, then dashboard, then any project
+    const activeTab = tabs.find(t => t.active);
+    const dashboardTab = tabs.find(t => t.url.includes('/dashboard'));
+    const projectTab = tabs.find(t => t.url.includes('/projects/'));
+    const bestTab = activeTab || dashboardTab || projectTab || tabs[0];
+    console.log('[LVB SW] Selected tab:', bestTab.id, bestTab.url);
+
+    lovableTabId = bestTab.id;
+
+    // Try to send; if it fails, try each remaining tab
+    tryTabsInOrder([bestTab, ...tabs.filter(t => t.id !== bestTab.id)], message);
   });
+}
+
+// Try sending a message to tabs one at a time until one succeeds
+function tryTabsInOrder(tabs, message) {
+  if (tabs.length === 0) {
+    broadcastToSidePanel({
+      type: 'INJECTION_ERROR',
+      error: 'Could not reach content script on any Lovable tab. Try reloading the Lovable page.'
+    });
+    return;
+  }
+
+  const tab = tabs[0];
+  chrome.tabs.sendMessage(tab.id, message)
+    .then(() => {
+      console.log('[LVB SW] Message delivered to tab', tab.id, tab.url);
+      lovableTabId = tab.id; // Cache the working tab
+    })
+    .catch(err => {
+      console.warn('[LVB SW] Tab', tab.id, 'unreachable:', err.message, '— trying next…');
+      tryTabsInOrder(tabs.slice(1), message);
+    });
 }

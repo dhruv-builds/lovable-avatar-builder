@@ -215,3 +215,42 @@ html, body {
   flex-shrink: 0;
   padding: 8px 14px;
 }
+
+/* ── Response Log ───────────────────────────────────────────────────────── */
+
+#response-log {
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+#response-entries {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.response-entry {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+
+.response-entry:last-child {
+  border-bottom: none;
+}
+
+.response-entry .entry-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 4px;
+}
+
+.entry-label.sent { color: var(--status-building); }
+.entry-label.ask { color: var(--status-processing); }
+.entry-label.response { color: var(--status-narrating); }
+.entry-label.error { color: var(--status-error); }
+.entry-label.info { color: var(--text-muted); }

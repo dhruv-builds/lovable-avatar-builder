@@ -5,6 +5,7 @@ allowed-tools:
   - Bash
   - Read
   - Edit
+  - Write
 ---
 
 # Commit and Log
@@ -24,16 +25,40 @@ git diff HEAD
 git log --oneline -5
 ```
 
+If `git status` shows no modified, added, or untracked files, tell the user **"Nothing to commit — working tree clean"** and stop. Do not proceed to the remaining steps.
+
 ### 2. Read current MEMORY.md
 
 Read `MEMORY.md` to find:
-- The last build number (e.g. "Build 1")
+- The last build number (e.g. "Build 4")
 - What was previously done
 - Any open issues or next steps carried forward
 
+**If MEMORY.md does not exist**, create it with this content and proceed with Build 1:
+
+```markdown
+# Project Memory — Lovable Voice Builder
+
+Track of major build milestones. Updated after each significant session.
+
+---
+
+<!-- Add new builds below this line -->
+```
+
 ### 3. Write a new build entry
 
-Append a new entry to `MEMORY.md` **before** the `<!-- Add new builds below this line -->` comment — insert it after the last `---` separator.
+Determine today's date by running:
+
+```bash
+date +%Y-%m-%d
+```
+
+Use the output as the date in the entry and commit message. Never hardcode a date.
+
+Insert the new build entry immediately **above** the `<!-- Add new builds below this line -->` comment at the end of MEMORY.md. The entry should end with `---`, a blank line, then the sentinel comment.
+
+If the sentinel comment is missing from MEMORY.md, append the new entry at the very end of the file, followed by the sentinel comment.
 
 Use this format:
 
@@ -50,33 +75,49 @@ Use this format:
 - <anything broken, deferred, or worth picking up next time>
 
 ---
+
+<!-- Add new builds below this line -->
 ```
 
 Determine the correct build number by incrementing from the last entry in MEMORY.md.
-Use today's date: 2026-03-17 (update to actual current date).
 Keep entries factual and concise — this is a developer log, not prose.
 
 ### 4. Stage and commit
 
+Run `git status --porcelain` to get the list of changed and untracked files. From that list, **exclude** any file matching these patterns (they contain secrets or are not meant to be committed):
+
+- `config.js`
+- `.env`
+- `*.log`
+- `node_modules/*`
+
+Stage the remaining files **explicitly by name**:
+
 ```bash
 cd "/Users/dhruv.sondhi/Documents/CLAUDE_CODE/Facetime App Builder/lovable-voice-builder"
-git add -A
+git add <file1> <file2> ...
 git status
 ```
 
-Verify `config.js` and `.env` are NOT in the staged files (they are gitignored — this is a safety check).
+If no files remain to stage after exclusions, tell the user and stop.
+
+Verify `config.js` and `.env` are **NOT** in the staged files (belt-and-suspenders safety check). If they appear, unstage them with `git reset HEAD <file>` before committing.
 
 Then commit:
 
 ```bash
-git commit -m "Build N — <one-line summary> (YYYY-MM-DD)
+git commit -m "$(cat <<'EOF'
+Build N — <one-line summary> (YYYY-MM-DD)
 
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>
+EOF
+)"
 ```
 
 ### 5. Confirm
 
 Print to the user:
 - The commit hash (`git log --oneline -1`)
+- A short diffstat (`git diff --stat HEAD~1`) showing files changed, insertions, and deletions
 - The full MEMORY.md entry you wrote
 - A reminder to run `git push` if they want to sync to GitHub

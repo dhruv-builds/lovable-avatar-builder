@@ -11,6 +11,9 @@ console.log('[LVB] Lovable Voice Builder content script loaded');
 
 const SELECTORS = {
   chatInput: [
+    // TipTap / ProseMirror (Lovable homepage confirmed match)
+    '[aria-label="Chat input"]',
+    'div.tiptap[contenteditable="true"]',
     // In-project chat
     'textarea[placeholder*="Ask"]',
     'textarea[placeholder*="ask"]',
@@ -18,10 +21,10 @@ const SELECTORS = {
     'textarea[placeholder*="Prompt"]',
     'textarea[placeholder*="message"]',
     'textarea[placeholder*="Message"]',
-    // Homepage — "Ask Lovable to create a..."
+    // Homepage textarea fallbacks
     'textarea[placeholder*="create"]',
     'textarea[placeholder*="build"]',
-    // Rich-text editors
+    // Other rich-text editors
     'div[contenteditable="true"][data-lexical-editor]',
     '[contenteditable="true"][placeholder*="Ask"]',
     '[contenteditable="true"][data-placeholder*="Ask"]',
@@ -69,6 +72,78 @@ function findElement(selectorList) {
     }
   }
   return null;
+}
+
+// ─── Echo Suppression ─────────────────────────────────────────────────────────
+// After injecting a prompt, we suppress the observer briefly so it doesn't
+// pick up the injected text as a "Lovable response" and relay it back.
+
+let lastInjectedPrompt = null;   // Text content of the last prompt we injected
+let suppressObserver = false;     // Flag to temporarily disable observer processing
+
+// ─── Build State Detection ───────────────────────────────────────────────────
+// Track whether Lovable is actively building so the service worker can gate prompts.
+
+let lovableBuildState = 'idle'; // 'idle' | 'building'
+let buildCheckInterval = null;
+
+function detectBuildState() {
+  // Look for indicators that Lovable is actively building
+  const buildIndicators = [
+    // "Thinking" / "Finished thinking" indicators
+    '[class*="thinking"]', '[class*="Thinking"]',
+    // Loading spinners / progress
+    '[class*="loading"]', '[class*="Loading"]',
+    '[class*="spinner"]', '[class*="Spinner"]',
+    '[class*="progress"]', '[class*="Progress"]',
+    // Streaming cursor / typing indicator
+    '[class*="streaming"]', '[class*="Streaming"]',
+    '[class*="typing"]', '[class*="Typing"]',
+    // Lovable-specific: "Editing file.tsx" blocks
+    '[class*="editing"]', '[class*="Editing"]',
+  ];
+
+  let isBuilding = false;
+  let detail = '';
+
+  for (const sel of buildIndicators) {
+    try {
+      const el = document.querySelector(sel);
+      if (el) {
+        isBuilding = true;
+        const txt = el.textContent.trim().substring(0, 60);
+        if (txt) detail = txt;
+        break;
+      }
+    } catch {}
+  }
+
+  // Also check for the stop button — if it's visible, Lovable is building
+  const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
+                  document.querySelector('button[aria-label*="stop"]') ||
+                  document.querySelector('button[title*="Stop"]');
+  if (stopBtn) {
+    isBuilding = true;
+    if (!detail) detail = 'Building…';
+  }
+
+  const newState = isBuilding ? 'building' : 'idle';
+
+  if (newState !== lovableBuildState) {
+    lovableBuildState = newState;
+    console.log('[LVB] Build state changed:', newState, detail || '');
+    chrome.runtime.sendMessage({
+      type: 'LOVABLE_STATUS',
+      status: newState,
+      detail: detail || (newState === 'building' ? 'Lovable is working…' : 'Ready for next prompt')
+    });
+  }
+}
+
+function startBuildStatePolling() {
+  // Poll every 500ms to detect build state changes
+  if (buildCheckInterval) return;
+  buildCheckInterval = setInterval(detectBuildState, 500);
 }
 
 // ─── Prompt Injection ─────────────────────────────────────────────────────────
@@ -120,27 +195,66 @@ function injectPrompt(text) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
 
   } else if (input.getAttribute('contenteditable') === 'true') {
-    // Rich-text / contenteditable editor (Slate, Lexical, ProseMirror, TipTap)
+    // Rich-text / contenteditable editor (TipTap, ProseMirror, Slate, Lexical)
     input.focus();
 
-    // Try execCommand first (broadest compatibility with rich-text editors)
+    // Strategy 1: Synthetic paste event — works best with TipTap/ProseMirror
+    // These frameworks listen for paste events and handle text insertion internally
+    let injected = false;
     try {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('insertText', false, text);
-    } catch {
-      // execCommand may be blocked — fall back to direct manipulation
-      input.textContent = text;
-      input.dispatchEvent(new InputEvent('input', {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      const pasteEvent = new ClipboardEvent('paste', {
+        clipboardData: dt,
         bubbles: true,
-        inputType: 'insertText',
-        data: text
-      }));
+        cancelable: true
+      });
+      injected = input.dispatchEvent(pasteEvent);
+      // Check if the editor actually picked up the text
+      const content = input.textContent.trim();
+      if (content.length > 0 && content !== text) {
+        // Paste was dispatched but editor may not have handled it
+        injected = false;
+      }
+      if (content === text || content.includes(text)) {
+        injected = true;
+      }
+      console.log('[LVB] Paste event dispatched, injected:', injected, 'content:', content.substring(0, 50));
+    } catch (e) {
+      console.log('[LVB] Paste event failed:', e.message);
+      injected = false;
+    }
+
+    // Strategy 2: execCommand (fallback for editors that don't handle paste events)
+    if (!injected) {
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, text);
+        console.log('[LVB] execCommand insertText used');
+      } catch {
+        // Strategy 3: Direct DOM manipulation (last resort)
+        input.textContent = text;
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          inputType: 'insertText',
+          data: text
+        }));
+        console.log('[LVB] Direct textContent manipulation used');
+      }
     }
 
   } else {
     console.warn('[LVB] Unknown input element type:', tag);
     return false;
   }
+
+  // ── Echo suppression: prevent the observer from picking up our own prompt ──
+  lastInjectedPrompt = text;
+  suppressObserver = true;
+  setTimeout(() => {
+    suppressObserver = false;
+    console.log('[LVB] Observer suppression window ended');
+  }, 3000);
 
   // Brief delay to let React update before we click Send
   setTimeout(triggerSend, 200);
@@ -207,6 +321,10 @@ function findChatContainer() {
 
 function startObserving(container) {
   const observer = new MutationObserver(() => {
+    // Skip processing if we just injected a prompt (echo suppression)
+    if (suppressObserver) {
+      return;
+    }
     // Debounce: reset timer on every mutation.
     // Lovable streams its response — we wait until it settles.
     clearTimeout(debounceTimer);
@@ -255,6 +373,17 @@ function extractLatestResponse(container) {
 
     const text = extractConversationalText(el);
     if (!text) continue;
+
+    // Echo suppression: skip if this text matches our injected prompt
+    if (lastInjectedPrompt) {
+      const promptStart = lastInjectedPrompt.substring(0, 100).toLowerCase();
+      const responseStart = text.substring(0, 100).toLowerCase();
+      if (responseStart.includes(promptStart) || promptStart.includes(responseStart)) {
+        console.log('[LVB] Skipping echo of injected prompt');
+        lastInjectedPrompt = null; // Clear after matching once
+        return;
+      }
+    }
 
     // Deduplicate
     const hash = simpleHash(text);
@@ -357,3 +486,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 initializeObserver();
+startBuildStatePolling();

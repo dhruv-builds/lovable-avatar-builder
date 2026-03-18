@@ -159,18 +159,21 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'CLARIFICATION':
       debugLog('← CLARIFICATION', message.text);
+      addResponseEntry('ask', 'Question', message.text);
       speakThroughAvatar(message.text);
       updateStatus('listening', 'Waiting for your answer…');
       break;
 
     case 'SPEAK_RESPONSE':
       debugLog('← SPEAK_RESPONSE', message.text);
+      addResponseEntry('response', 'Lovable', message.text);
       speakThroughAvatar(message.text);
       updateStatus('narrating', 'Lovable is building…');
       break;
 
     case 'PROMPT_SENT':
       debugLog('← PROMPT_SENT', message.prompt);
+      addResponseEntry('sent', 'Sent', message.prompt);
       document.getElementById('prompt-text').textContent = message.prompt;
       updateStatus('building', 'Prompt sent — Lovable is building…');
       break;
@@ -179,7 +182,17 @@ chrome.runtime.onMessage.addListener((message) => {
       debugLog('← LOVABLE_STATUS', message.status);
       if (message.status === 'idle') {
         updateStatus('listening', 'Done — ready for next instruction');
+      } else if (message.status === 'building') {
+        const detail = message.detail || 'Lovable is working…';
+        updateStatus('building', detail);
+        addResponseEntry('info', 'Building', detail);
       }
+      break;
+
+    case 'INJECTION_ERROR':
+      debugLog('← INJECTION_ERROR', message.error);
+      addResponseEntry('error', 'Error', message.error || 'Injection failed');
+      updateStatus('error', 'Injection failed — see activity log');
       break;
   }
 });
@@ -220,6 +233,7 @@ function sendManualInput() {
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
+  addResponseEntry('info', 'You', text);
   handleUserSpeech(text);
 }
 
@@ -235,6 +249,33 @@ function updateStatus(state, text) {
 
 function updateAvatarStateLabel(text) {
   document.getElementById('avatar-state-label').textContent = text;
+}
+
+// ─── Response Log ──────────────────────────────────────────────────────────
+
+function addResponseEntry(type, label, text) {
+  const container = document.getElementById('response-entries');
+  if (!container) return;
+
+  const entry = document.createElement('div');
+  entry.className = 'response-entry';
+  entry.innerHTML = `<span class="entry-label ${type}">${label}:</span> ${escapeHtml(text)}`;
+  container.appendChild(entry);
+
+  // Keep only the last 20 entries
+  while (container.children.length > 20) {
+    container.removeChild(container.firstChild);
+  }
+
+  // Auto-scroll
+  const log = document.getElementById('response-log');
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 // ─── Debug Log ───────────────────────────────────────────────────────────────
@@ -269,5 +310,20 @@ if (CONFIG.MOCK_MODE) {
 if (!CONFIG.MOCK_MODE && (!CONFIG.ANTHROPIC_API_KEY || CONFIG.ANTHROPIC_API_KEY === 'YOUR_ANTHROPIC_API_KEY')) {
   updateStatus('error', 'Missing ANTHROPIC_API_KEY — update config.js');
 } else {
-  initializeAnam();
+  // Avatar is optional — text input always works.
+  // If Anam key is missing/expired, skip avatar and go straight to text mode.
+  if (!CONFIG.ANAM_API_KEY || CONFIG.ANAM_API_KEY === 'YOUR_ANAM_API_KEY') {
+    console.log('[LVB] No Anam API key — running in text-only mode');
+    updateStatus('listening', 'Text mode — type below to build');
+    updateAvatarStateLabel('Text mode');
+    addResponseEntry('info', 'Mode', 'Avatar unavailable — using text input');
+  } else {
+    initializeAnam().catch(err => {
+      // Avatar failed but text mode still works
+      console.warn('[LVB] Avatar init failed, continuing in text mode:', err.message);
+      updateStatus('listening', 'Text mode — type below to build');
+      updateAvatarStateLabel('Unavailable');
+      addResponseEntry('info', 'Mode', 'Avatar unavailable — using text input');
+    });
+  }
 }

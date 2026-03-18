@@ -107,4 +107,31 @@ Track of major build milestones. Updated after each significant session.
 
 ---
 
+## Build 5 — Tab routing, echo suppression, activity log & text mode (2026-03-18)
+
+### What was built / changed
+- **`background/service-worker.js`**: Smarter tab routing — prefers active tab, falls back through all Lovable tabs via `tryTabsInOrder()`; clears stale cached tab ID on send failure; verbose logging throughout
+- **`background/service-worker.js`**: Claude system prompt revised — bias toward action (generate `[PROMPT]:` immediately with sensible defaults), cap at 2 clarifying questions total, reduced `max_tokens` to 300
+- **`background/service-worker.js`**: Added `lovableBuildState` tracking stubs (idle/building)
+- **`content/content-script.js`**: Added TipTap/ProseMirror selectors at top of `SELECTORS.chatInput` (`[aria-label="Chat input"]`, `div.tiptap[contenteditable="true"]`) — confirmed match on Lovable homepage
+- **`content/content-script.js`**: Three-strategy contenteditable injection: synthetic paste event (TipTap-native) → `execCommand` → direct DOM, with logging at each step
+- **`content/content-script.js`**: Echo suppression — after injecting a prompt, observer is silenced for 3s so the injected text isn't relayed back as a Lovable response
+- **`content/content-script.js`**: Build state polling via `setInterval(detectBuildState, 500)` — detects thinking/loading/stop-button indicators, sends `LOVABLE_STATUS` messages to service worker
+- **`sidepanel/sidepanel.html` + `.css`**: Activity log panel (`#response-log`) shows last 20 entries (Sent / Question / Lovable / Error / Info) with color-coded labels, auto-scrolls
+- **`sidepanel/sidepanel.js`**: Populates activity log on `CLARIFICATION`, `SPEAK_RESPONSE`, `PROMPT_SENT`, `LOVABLE_STATUS`, `INJECTION_ERROR`, and manual text input
+- **`sidepanel/sidepanel.js`**: Graceful text-only mode — if Anam key is missing/expired, skips avatar init entirely; avatar init failure also falls back to text mode instead of crashing
+- **`.claude/skills/commit-and-log.md`**: Added `Write` to allowed tools, improved MEMORY.md creation logic, updated exclusion patterns, fixed date injection to use `date +%Y-%m-%d`
+
+### Key decisions
+- Synthetic paste event is the correct injection path for TipTap/ProseMirror — these editors don't react to `execCommand` reliably; `ClipboardEvent` with `DataTransfer` triggers their internal paste handler
+- Text mode is now the primary fallback (avatar is optional), making the extension usable without Anam credentials
+- Activity log replaces the need for DevTools console for most debugging scenarios
+
+### Known issues / next steps
+- Build state detection (stop-button heuristic) needs live testing — Lovable's DOM class names for streaming indicators are speculative
+- Full avatar + voice path still needs end-to-end testing with live Anam credentials
+- TipTap paste injection needs validation on the actual homepage — confirm text appears and send button activates
+
+---
+
 <!-- Add new builds below this line -->
