@@ -86,6 +86,7 @@ let suppressObserver = false;     // Flag to temporarily disable observer proces
 
 let lovableBuildState = 'idle'; // 'idle' | 'building'
 let buildCheckInterval = null;
+let lastBuildFailReported = false; // Guard against repeated failure reports
 
 function detectBuildState() {
   // Look for indicators that Lovable is actively building
@@ -137,6 +138,45 @@ function detectBuildState() {
       status: newState,
       detail: detail || (newState === 'building' ? 'Lovable is working…' : 'Ready for next prompt')
     });
+
+    // Reset failure guard when build transitions to idle normally
+    if (newState === 'idle') {
+      lastBuildFailReported = false;
+    }
+  }
+
+  // ── Build failure detection ──
+  // Check for failure indicators in recent chat messages
+  if (!isBuilding && !lastBuildFailReported) {
+    const failurePatterns = [
+      'Build unsuccessful', 'Build failed', 'build error',
+      'could not compile', 'compilation error', 'Failed to build'
+    ];
+
+    // Look for failure text in the most recent message elements
+    const messageEls = document.querySelectorAll(
+      '[class*="message"], [class*="Message"], [role="listitem"], article'
+    );
+
+    if (messageEls.length > 0) {
+      // Check only the last few messages for failure text
+      const recentEls = Array.from(messageEls).slice(-3);
+      for (const el of recentEls) {
+        const text = el.textContent || '';
+        for (const pattern of failurePatterns) {
+          if (text.toLowerCase().includes(pattern.toLowerCase())) {
+            lastBuildFailReported = true;
+            const errorSnippet = text.substring(0, 200).trim();
+            console.log('[LVB] Build failure detected:', errorSnippet);
+            chrome.runtime.sendMessage({
+              type: 'BUILD_FAILED',
+              error: errorSnippet
+            });
+            return; // Stop checking once failure is reported
+          }
+        }
+      }
+    }
   }
 }
 
@@ -468,6 +508,22 @@ function simpleHash(str) {
 // ─── Message Listener ─────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'CLICK_STOP') {
+    const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
+                    document.querySelector('button[aria-label*="stop"]') ||
+                    document.querySelector('button[title*="Stop"]');
+    if (stopBtn) {
+      stopBtn.click();
+      console.log('[LVB] Stop button clicked');
+      chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: true });
+    } else {
+      console.log('[LVB] Stop button not found');
+      chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: false });
+    }
+    sendResponse({ received: true });
+    return true;
+  }
+
   if (message.type === 'INJECT_PROMPT') {
     const success = injectPrompt(message.prompt);
     sendResponse({ success });

@@ -24,28 +24,20 @@
       <span id="status-text">Ready — speak to start building</span>
     </div>
 
-    <!-- Response log — shows Claude responses and injection status -->
-    <div id="response-log">
-      <div class="section-label">Activity</div>
-      <div id="response-entries"></div>
+    <!-- Chat conversation — mirrors avatar interaction -->
+    <div id="chat-container">
+      <div id="chat-messages"></div>
     </div>
 
-    <!-- Last prompt display — shows what was sent to Lovable -->
-    <div id="last-prompt">
-      <div class="section-label">Last prompt sent to Lovable:</div>
-      <div id="prompt-text">—</div>
+    <!-- Text input -->
+    <div id="manual-input">
+      <input type="text" id="text-input" placeholder="Type your instruction here…" autocomplete="off">
+      <button id="btn-send" class="control-btn">Send</button>
     </div>
 
     <!-- Controls -->
     <div id="controls">
-      <button id="btn-toggle" class="control-btn">Pause</button>
       <button id="btn-reset" class="control-btn secondary">Reset</button>
-    </div>
-
-    <!-- Text input — primary input when avatar is unavailable -->
-    <div id="manual-input">
-      <input type="text" id="text-input" placeholder="Type your instruction here…" autocomplete="off">
-      <button id="btn-send" class="control-btn">Send</button>
     </div>
 
     <!-- Debug log panel — visible when CONFIG.DEBUG_LOG is true -->

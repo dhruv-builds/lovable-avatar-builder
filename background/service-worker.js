@@ -27,11 +27,29 @@ Rules:
 7. If the user is responding to a Lovable message, formulate the response as a direct answer
 8. Never include markdown formatting — plain text only
 9. For iterative changes, be specific about what component/section to modify
+10. If the user wants to stop or cancel the current Lovable build (e.g. "stop", "cancel that",
+    "never mind", "hold on"), respond ONLY with: [STOP]: <brief description of what was cancelled>
 
 You receive the full conversation history including what Lovable has said back. Use this
 context to understand where the user is in their build process.
 
 Output ONLY the prefixed prompt or clarification. No preamble, no explanation.`;
+
+const SUMMARIZE_PROMPT = `You clean up raw text captured from the Lovable.dev UI. The text may contain:
+- Echoed user prompts that were injected into Lovable
+- UI artifacts like "Ask Lovable...", "Add files", "Drop any files here", timestamps, metadata
+- Duplicate or streaming fragments
+- Navigation labels and button text
+
+You also receive the last prompt that was sent to Lovable, so you can identify and remove echoes of it.
+
+Your job:
+1. Identify what Lovable actually said or did (ignore everything else)
+2. Summarize it in 1-2 short conversational sentences suitable for text-to-speech
+3. If a build failure is mentioned, clearly state that the build failed and what went wrong
+4. If there is no meaningful Lovable response in the text, output only: [EMPTY]
+
+Output ONLY the clean summary. No quotes, no preamble.`;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -51,6 +69,9 @@ const API_COOLDOWN_MS = 2000; // Minimum 2s between API calls
 // Build state — track whether Lovable is actively building
 let lovableBuildState = 'idle'; // 'idle' | 'building'
 let lovableBuildDetail = '';
+
+// Auto-retry guard — at most one automatic retry per user prompt cycle
+let autoRetryUsed = false;
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
@@ -136,6 +157,47 @@ async function reformulateWithClaude(userSpeech) {
   return data.content[0].text;
 }
 
+// ─── Claude Response Summarizer ──────────────────────────────────────────────
+
+async function summarizeWithClaude(rawText, lastPrompt) {
+  // Mock mode — pass through truncated text
+  if (CONFIG.MOCK_MODE) {
+    console.log('[LVB SW] MOCK MODE — skipping summarize');
+    return rawText.length > 200 ? rawText.substring(0, 200) + '…' : rawText;
+  }
+
+  const userMessage = lastPrompt
+    ? `Last prompt sent to Lovable:\n${lastPrompt}\n\nRaw captured text:\n${rawText}`
+    : `Raw captured text:\n${rawText}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: CONFIG.ANTHROPIC_MODEL,
+      max_tokens: 150,
+      system: SUMMARIZE_PROMPT,
+      messages: [{ role: 'user', content: userMessage }]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Claude summarize error ${response.status}: ${err}`);
+  }
+
+  const data = await response.json();
+  const summary = data.content[0].text.trim();
+
+  if (summary === '[EMPTY]') return null;
+  return summary;
+}
+
 // ─── Message History Management ───────────────────────────────────────────────
 
 function addToHistory(from, text) {
@@ -163,8 +225,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'USER_SPEECH': {
       const userText = message.text;
 
-      // Block new prompts while Lovable is building
-      if (lovableBuildState === 'building') {
+      // Allow stop commands even while building
+      const isStopCommand = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i.test(userText.trim());
+
+      // Block new prompts while Lovable is building (but not stop commands)
+      if (lovableBuildState === 'building' && !isStopCommand) {
         console.log('[LVB SW] Blocked prompt — Lovable is building:', lovableBuildDetail);
         broadcastToSidePanel({
           type: 'CLARIFICATION',
@@ -197,10 +262,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true; // Keep channel open for async
     }
 
-    // ── Lovable posted a new response → forward to side panel ─────────────────
+    // ── Lovable posted a new response → summarize then forward to side panel ──
     case 'LOVABLE_RESPONSE': {
       addToHistory('lovable', message.text);
-      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: message.text });
+
+      // Find the last prompt we sent for echo context
+      const lastPrompt = conversationHistory.slice().reverse()
+        .find(e => e.from === 'claude' && e.text.includes('[PROMPT]:'));
+      const promptCtx = lastPrompt
+        ? lastPrompt.text.replace('[PROMPT]:', '').trim()
+        : '';
+
+      summarizeWithClaude(message.text, promptCtx)
+        .then(summary => {
+          if (summary) {
+            console.log('[LVB SW] Summarized response:', summary);
+            broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: summary });
+          }
+        })
+        .catch(err => {
+          console.error('[LVB SW] Summarize failed, using raw text:', err.message);
+          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: message.text });
+        });
+
       sendResponse({ received: true });
       return true;
     }
@@ -242,6 +326,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    // ── Build failure — auto-retry once ────────────────────────────────────────
+    case 'BUILD_FAILED': {
+      console.log('[LVB SW] Build failed:', message.error);
+
+      if (autoRetryUsed) {
+        // Already retried once — just report to user
+        broadcastToSidePanel({
+          type: 'SPEAK_RESPONSE',
+          text: "The build failed again. You may want to describe the issue or try a different approach."
+        });
+        sendResponse({ received: true });
+        return true;
+      }
+
+      autoRetryUsed = true;
+
+      // Tell the user what's happening
+      broadcastToSidePanel({
+        type: 'SPEAK_RESPONSE',
+        text: "The build ran into an issue. I'm asking Lovable to diagnose and fix it."
+      });
+
+      // Inject a fix-it prompt
+      const fixPrompt = `The previous build failed with this error: ${message.error}. Please diagnose the error and fix it so the build succeeds.`;
+      broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: fixPrompt });
+      sendToLovableTab({ type: 'INJECT_PROMPT', prompt: fixPrompt });
+      addToHistory('claude', `[PROMPT]: ${fixPrompt}`);
+
+      sendResponse({ received: true });
+      return true;
+    }
+
+    // ── Stop result from content script ────────────────────────────────────────
+    case 'STOP_RESULT': {
+      const feedback = message.success
+        ? 'Lovable has been stopped.'
+        : "I tried to stop Lovable but couldn't find the stop button. It may have already finished.";
+      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: feedback });
+      sendResponse({ received: true });
+      return true;
+    }
+
     // ── Reset conversation ─────────────────────────────────────────────────────
     case 'RESET_CONVERSATION': {
       conversationHistory = [];
@@ -256,6 +382,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 function processUserSpeech(userText) {
   lastApiCallTime = Date.now();
+  autoRetryUsed = false; // Reset retry guard on each new user prompt
+
+  // Fast-path: detect stop intent via keywords before calling Claude
+  const stopPattern = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i;
+  if (stopPattern.test(userText.trim())) {
+    addToHistory('user', userText);
+    addToHistory('claude', '[STOP]: User requested stop');
+    broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Stopping Lovable now.' });
+    sendToLovableTab({ type: 'CLICK_STOP' });
+    return;
+  }
+
   addToHistory('user', userText);
 
   reformulateWithClaude(userText)
@@ -263,7 +401,10 @@ function processUserSpeech(userText) {
       // Store Claude's response in history for proper multi-turn context
       addToHistory('claude', claudeResponse);
 
-      if (claudeResponse.startsWith('[CLARIFY]:')) {
+      if (claudeResponse.startsWith('[STOP]:')) {
+        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Stopping Lovable now.' });
+        sendToLovableTab({ type: 'CLICK_STOP' });
+      } else if (claudeResponse.startsWith('[CLARIFY]:')) {
         const question = claudeResponse.replace('[CLARIFY]:', '').trim();
         broadcastToSidePanel({ type: 'CLARIFICATION', text: question });
       } else {

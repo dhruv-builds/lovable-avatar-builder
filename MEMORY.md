@@ -134,4 +134,32 @@ Track of major build milestones. Updated after each significant session.
 
 ---
 
+## Build 6 — Intelligent response pipeline: summarizer, auto-recovery & stop command (2026-03-18)
+
+### What was built / changed
+- **`background/service-worker.js`**: Added `SUMMARIZE_PROMPT` constant and `summarizeWithClaude(rawText, lastPrompt)` function — calls Claude API (max_tokens 150) to clean DOM-captured text before avatar speaks. Strips UI artifacts ("Ask Lovable...", "Add files", timestamps), echoed prompts, streaming duplicates. Falls back to raw text on error; returns `null` on `[EMPTY]`
+- **`background/service-worker.js`**: Modified `LOVABLE_RESPONSE` handler to route through `summarizeWithClaude` before broadcasting `SPEAK_RESPONSE` — avatar now speaks a clean 1-2 sentence summary instead of raw DOM text
+- **`background/service-worker.js`**: Added `BUILD_FAILED` message handler — auto-injects a fix-it prompt to Lovable ("Please diagnose the error and fix it") and tells the user via avatar. `autoRetryUsed` flag limits to 1 auto-retry per user prompt cycle; second failure gets a passive report only
+- **`background/service-worker.js`**: Added `STOP_RESULT` message handler — avatar speaks "Lovable has been stopped" or graceful fallback if stop button wasn't found
+- **`background/service-worker.js`**: Added stop keyword fast-path in `processUserSpeech()` — regex matches "stop", "cancel", "halt", "abort" etc. before Claude API call; sends `CLICK_STOP` to content script immediately
+- **`background/service-worker.js`**: Added `[STOP]:` as third output prefix in `SYSTEM_PROMPT` (rule 10) and handling in `.then()` — catches non-keyword stop intent routed through Claude (e.g. "never mind")
+- **`background/service-worker.js`**: Stop commands now bypass the build-state block in `USER_SPEECH` handler via `isStopCommand` check — user can say "stop" even while Lovable is building
+- **`background/service-worker.js`**: `autoRetryUsed` resets to `false` at start of each `processUserSpeech()` call
+- **`content/content-script.js`**: Added `lastBuildFailReported` guard flag to prevent repeated `BUILD_FAILED` messages for the same failure
+- **`content/content-script.js`**: Expanded `detectBuildState()` — after state detection, checks last 3 message elements for failure text patterns ("Build unsuccessful", "Build failed", "could not compile", etc.) and sends `BUILD_FAILED` message with up to 200-char error snippet
+- **`content/content-script.js`**: Added `CLICK_STOP` message handler — queries for stop button by aria-label/title, clicks it if found, sends `STOP_RESULT { success: true/false }` back to service worker
+
+### Key decisions
+- Summarizer is a separate Claude API call (not part of the reformulation call) — fires independently after Lovable responds, not before. No rate-limit conflict since timing is different
+- `autoRetryUsed` resets on user speech (not auto-retry inject) — prevents infinite retry loops without blocking legitimate user follow-ups
+- Stop bypasses build-state block entirely — stop is the one command that must always get through
+
+### Known issues / next steps
+- Summarizer adds ~1s latency per Lovable response (second Claude API call) — acceptable for demo, but worth noting
+- Build failure detection relies on text patterns in DOM elements — may produce false positives if Lovable error UI changes significantly
+- Auto-recovery tested conceptually; triggering a real build failure for end-to-end test requires a deliberately bad prompt
+- Full avatar TTS path still needs live Anam credentials — text mode tested and confirmed working
+
+---
+
 <!-- Add new builds below this line -->

@@ -116,14 +116,7 @@ html, body {
   white-space: nowrap;
 }
 
-/* ── Last Prompt ─────────────────────────────────────────────────────────── */
-
-#last-prompt {
-  padding: 8px 10px;
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-}
+/* ── Section Label ───────────────────────────────────────────────────────── */
 
 .section-label {
   color: var(--text-muted);
@@ -133,16 +126,100 @@ html, body {
   margin-bottom: 4px;
 }
 
-#prompt-text {
-  color: var(--text-primary);
+/* ── Chat Container ─────────────────────────────────────────────────────── */
+
+#chat-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 8px;
+}
+
+#chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-msg {
+  max-width: 88%;
+  padding: 8px 10px;
+  border-radius: 12px;
   font-size: 12px;
-  line-height: 1.4;
-  max-height: 48px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  line-height: 1.45;
+  word-break: break-word;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* User messages — right aligned, accent color */
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+/* Assistant messages — left aligned, surface color (avatar responses) */
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-bottom-left-radius: 4px;
+}
+
+/* System messages — centered, muted (status updates) */
+.chat-msg.system {
+  align-self: center;
+  max-width: 95%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  text-align: center;
+}
+
+.chat-msg .msg-label {
+  display: block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+
+.chat-msg .msg-time {
+  display: block;
+  font-size: 9px;
+  opacity: 0.4;
+  margin-top: 3px;
+  text-align: right;
+}
+
+/* ── Avatar Collapsed (when unavailable) ────────────────────────────────── */
+
+#avatar-container.collapsed {
+  flex: 0;
+  height: 36px;
+  min-height: 36px;
+}
+
+#avatar-container.collapsed #avatar-video,
+#avatar-container.collapsed #avatar-audio {
+  display: none;
+}
+
+#avatar-container.collapsed #avatar-overlay {
+  position: static;
+  height: 100%;
+  align-items: center;
 }
 
 /* ── Controls ────────────────────────────────────────────────────────────── */
@@ -216,41 +293,3 @@ html, body {
   padding: 8px 14px;
 }
 
-/* ── Response Log ───────────────────────────────────────────────────────── */
-
-#response-log {
-  padding: 8px 10px;
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-#response-entries {
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.response-entry {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  word-break: break-word;
-}
-
-.response-entry:last-child {
-  border-bottom: none;
-}
-
-.response-entry .entry-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-right: 4px;
-}
-
-.entry-label.sent { color: var(--status-building); }
-.entry-label.ask { color: var(--status-processing); }
-.entry-label.response { color: var(--status-narrating); }
-.entry-label.error { color: var(--status-error); }
-.entry-label.info { color: var(--text-muted); }

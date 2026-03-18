@@ -159,61 +159,50 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'CLARIFICATION':
       debugLog('← CLARIFICATION', message.text);
-      addResponseEntry('ask', 'Question', message.text);
+      addChatMessage('assistant', message.text);
       speakThroughAvatar(message.text);
       updateStatus('listening', 'Waiting for your answer…');
       break;
 
     case 'SPEAK_RESPONSE':
       debugLog('← SPEAK_RESPONSE', message.text);
-      addResponseEntry('response', 'Lovable', message.text);
+      addChatMessage('assistant', message.text);
       speakThroughAvatar(message.text);
-      updateStatus('narrating', 'Lovable is building…');
+      updateStatus('listening', 'Done — ready for next instruction');
       break;
 
     case 'PROMPT_SENT':
       debugLog('← PROMPT_SENT', message.prompt);
-      addResponseEntry('sent', 'Sent', message.prompt);
-      document.getElementById('prompt-text').textContent = message.prompt;
+      addChatMessage('system', 'Sent to Lovable: ' + message.prompt);
       updateStatus('building', 'Prompt sent — Lovable is building…');
       break;
 
     case 'LOVABLE_STATUS':
       debugLog('← LOVABLE_STATUS', message.status);
       if (message.status === 'idle') {
-        updateStatus('listening', 'Done — ready for next instruction');
+        updateStatus('listening', 'Ready for next instruction');
       } else if (message.status === 'building') {
         const detail = message.detail || 'Lovable is working…';
         updateStatus('building', detail);
-        addResponseEntry('info', 'Building', detail);
       }
       break;
 
     case 'INJECTION_ERROR':
       debugLog('← INJECTION_ERROR', message.error);
-      addResponseEntry('error', 'Error', message.error || 'Injection failed');
-      updateStatus('error', 'Injection failed — see activity log');
+      addChatMessage('system', 'Error: ' + (message.error || 'Injection failed'));
+      updateStatus('error', 'Injection failed');
       break;
   }
 });
 
 // ─── Controls ─────────────────────────────────────────────────────────────────
 
-document.getElementById('btn-toggle').addEventListener('click', () => {
-  isListening = !isListening;
-  const btn = document.getElementById('btn-toggle');
-  if (isListening) {
-    btn.textContent = 'Pause';
-    updateStatus('listening', 'Listening — speak to build');
-  } else {
-    btn.textContent = 'Resume';
-    updateStatus('idle', 'Paused — click Resume to continue');
-  }
-});
-
 document.getElementById('btn-reset').addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'RESET_CONVERSATION' });
-  document.getElementById('prompt-text').textContent = '—';
+  // Clear chat messages
+  const chat = document.getElementById('chat-messages');
+  if (chat) chat.innerHTML = '';
+  addChatMessage('system', 'Conversation reset — ready');
   updateStatus('listening', 'Conversation reset — ready');
 });
 
@@ -233,7 +222,7 @@ function sendManualInput() {
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
-  addResponseEntry('info', 'You', text);
+  addChatMessage('user', text);
   handleUserSpeech(text);
 }
 
@@ -251,25 +240,47 @@ function updateAvatarStateLabel(text) {
   document.getElementById('avatar-state-label').textContent = text;
 }
 
-// ─── Response Log ──────────────────────────────────────────────────────────
+function collapseAvatar(labelText) {
+  const container = document.getElementById('avatar-container');
+  if (container) container.classList.add('collapsed');
+  updateAvatarStateLabel(labelText || 'Unavailable');
+}
 
-function addResponseEntry(type, label, text) {
-  const container = document.getElementById('response-entries');
+// ─── Chat UI ──────────────────────────────────────────────────────────────
+
+function addChatMessage(role, text) {
+  const container = document.getElementById('chat-messages');
   if (!container) return;
 
-  const entry = document.createElement('div');
-  entry.className = 'response-entry';
-  entry.innerHTML = `<span class="entry-label ${type}">${label}:</span> ${escapeHtml(text)}`;
-  container.appendChild(entry);
+  const msg = document.createElement('div');
+  msg.className = `chat-msg ${role}`;
 
-  // Keep only the last 20 entries
-  while (container.children.length > 20) {
+  // Label for assistant messages
+  const labelText = role === 'assistant' ? 'Avatar' : role === 'user' ? 'You' : '';
+
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+
+  if (role === 'system') {
+    msg.textContent = text;
+  } else {
+    msg.innerHTML =
+      (labelText ? `<span class="msg-label">${labelText}</span>` : '') +
+      escapeHtml(text) +
+      `<span class="msg-time">${time}</span>`;
+  }
+
+  container.appendChild(msg);
+
+  // Keep last 50 messages
+  while (container.children.length > 50) {
     container.removeChild(container.firstChild);
   }
 
   // Auto-scroll
-  const log = document.getElementById('response-log');
-  if (log) log.scrollTop = log.scrollHeight;
+  const chat = document.getElementById('chat-container');
+  if (chat) {
+    chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
+  }
 }
 
 function escapeHtml(str) {
@@ -314,16 +325,16 @@ if (!CONFIG.MOCK_MODE && (!CONFIG.ANTHROPIC_API_KEY || CONFIG.ANTHROPIC_API_KEY 
   // If Anam key is missing/expired, skip avatar and go straight to text mode.
   if (!CONFIG.ANAM_API_KEY || CONFIG.ANAM_API_KEY === 'YOUR_ANAM_API_KEY') {
     console.log('[LVB] No Anam API key — running in text-only mode');
+    collapseAvatar('Text mode');
     updateStatus('listening', 'Text mode — type below to build');
-    updateAvatarStateLabel('Text mode');
-    addResponseEntry('info', 'Mode', 'Avatar unavailable — using text input');
+    addChatMessage('system', 'Text mode — avatar unavailable');
   } else {
     initializeAnam().catch(err => {
       // Avatar failed but text mode still works
       console.warn('[LVB] Avatar init failed, continuing in text mode:', err.message);
+      collapseAvatar('Unavailable');
       updateStatus('listening', 'Text mode — type below to build');
-      updateAvatarStateLabel('Unavailable');
-      addResponseEntry('info', 'Mode', 'Avatar unavailable — using text input');
+      addChatMessage('system', 'Avatar unavailable — using text chat');
     });
   }
 }
