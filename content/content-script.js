@@ -5,6 +5,10 @@
 
 console.log('[FLB] Facetime Lovable Builder content script loaded');
 
+// Announce to service worker that this tab has an active content script
+chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY', url: window.location.href })
+  .catch(() => { /* Extension context may not be ready yet — harmless */ });
+
 // ─── Selectors ────────────────────────────────────────────────────────────────
 // These are tried in order. The first match wins.
 // UPDATE these after manually inspecting Lovable's DOM in DevTools.
@@ -294,7 +298,7 @@ function injectPrompt(text) {
   setTimeout(() => {
     suppressObserver = false;
     console.log('[FLB] Observer suppression window ended');
-  }, 3000);
+  }, 5000);
 
   // Brief delay to let React update before we click Send
   setTimeout(triggerSend, 200);
@@ -505,6 +509,47 @@ function simpleHash(str) {
   return hash.toString();
 }
 
+// ─── Stop Confirmation Dialog Helper ──────────────────────────────────────────
+// Lovable may show "Are you sure you want to stop?" after clicking Stop.
+// Find the confirm/yes button inside any dialog or modal overlay.
+
+function findStopConfirmButton() {
+  // Check inside dialog/modal containers first
+  const dialogContainers = document.querySelectorAll(
+    '[role="dialog"], [role="alertdialog"], [class*="modal"], [class*="Modal"], ' +
+    '[class*="dialog"], [class*="Dialog"], [class*="overlay"], [class*="Overlay"], ' +
+    '[class*="popover"], [class*="Popover"]'
+  );
+
+  const confirmTexts = ['yes', 'confirm', 'stop', 'ok', 'continue', 'proceed'];
+
+  for (const container of dialogContainers) {
+    const buttons = container.querySelectorAll('button');
+    for (const btn of buttons) {
+      const text = (btn.textContent || '').trim().toLowerCase();
+      if (confirmTexts.some(t => text === t || text.startsWith(t))) {
+        return btn;
+      }
+    }
+  }
+
+  // Fallback: look for any recently-appeared button with confirm-like text
+  // that isn't the original stop button
+  const allButtons = document.querySelectorAll('button');
+  for (const btn of allButtons) {
+    const text = (btn.textContent || '').trim().toLowerCase();
+    // Match "Yes", "Confirm", "Yes, stop" etc. but not generic nav buttons
+    if (text.includes('yes') || text === 'confirm' || text.match(/^stop\b/) || text === 'ok') {
+      // Skip if it's the original build-stop button (has aria-label "Stop")
+      const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if (ariaLabel.includes('stop')) continue;
+      return btn;
+    }
+  }
+
+  return null;
+}
+
 // ─── Message Listener ─────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -515,6 +560,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (stopBtn) {
       stopBtn.click();
       console.log('[FLB] Stop button clicked');
+
+      // Watch for a confirmation dialog ("Are you sure you want to stop?")
+      // and auto-confirm it. Poll every 200ms for up to 2s.
+      let confirmAttempts = 0;
+      const confirmInterval = setInterval(() => {
+        confirmAttempts++;
+        const confirmBtn = findStopConfirmButton();
+        if (confirmBtn) {
+          confirmBtn.click();
+          clearInterval(confirmInterval);
+          console.log('[FLB] Stop confirmation dialog auto-confirmed');
+        }
+        if (confirmAttempts >= 10) clearInterval(confirmInterval);
+      }, 200);
+
       chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: true });
     } else {
       console.log('[FLB] Stop button not found');

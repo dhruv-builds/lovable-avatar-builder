@@ -36,6 +36,7 @@ async function initializeAnam() {
       console.warn('[FLB] Microphone not available:', micErr.message,
         '— voice input disabled, text input still works.',
         'To fix: chrome://settings/content/microphone');
+      updateStatus('error', 'Mic blocked — check chrome://settings/content/microphone');
     }
 
     // ── Step 1: Exchange API key for session token (production flow) ──
@@ -98,15 +99,18 @@ async function initializeAnam() {
 
     anamClient.addListener(AnamEvent.MIC_PERMISSION_GRANTED, () => {
       console.log('[FLB Panel] SDK mic permission granted');
+      updateStatus('listening', 'Listening — speak to build');
+      updateAvatarStateLabel('Live');
     });
 
     anamClient.addListener(AnamEvent.MIC_PERMISSION_DENIED, () => {
       console.warn('[FLB Panel] SDK mic permission denied');
-      updateStatus('error', 'Microphone blocked by browser');
+      updateStatus('error', 'Microphone blocked — voice input disabled');
+      updateAvatarStateLabel('Mic denied');
     });
 
-    updateStatus('listening', 'Listening — speak to build');
-    updateAvatarStateLabel('Live');
+    updateStatus('idle', 'Avatar connected — waiting for mic…');
+    updateAvatarStateLabel('Connecting mic…');
 
   } catch (err) {
     console.error('[FLB Panel] Failed to initialize Anam:', err);
@@ -140,7 +144,7 @@ function handleUserSpeech(text) {
 // ─── Avatar Speech Output ──────────────────────────────────────────────────────
 
 function speakThroughAvatar(text) {
-  if (!anamClient || !text) return;
+  if (!anamClient || !text || !isListening) return;
 
   try {
     // SDK v4: use createTalkMessageStream for BYO-brain TTS
@@ -195,7 +199,8 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'INJECTION_ERROR':
       debugLog('← INJECTION_ERROR', message.error);
       addChatMessage('system', 'Error: ' + (message.error || 'Injection failed'));
-      updateStatus('error', 'Injection failed');
+      addChatMessage('system', 'Tip: Make sure you have a Lovable project open (not the homepage). If already open, reload the Lovable tab.');
+      updateStatus('error', 'Injection failed — reload Lovable tab');
       break;
   }
 });
@@ -224,12 +229,17 @@ function toggleListening() {
     btn.classList.add('listening');
     btn.title = 'Pause listening (Space)';
     updateStatus('listening', 'Listening \u2014 speak to build');
+    // Unmute mic at SDK level
+    try { if (anamClient) anamClient.unmuteInputAudio(); } catch (e) { /* SDK may not be ready */ }
   } else {
     btn.textContent = '\u{23F8} Paused';
     btn.classList.remove('listening');
     btn.classList.add('paused');
     btn.title = 'Resume listening (Space)';
     updateStatus('idle', 'Paused \u2014 press Space or click to resume');
+    // Mute mic and stop any ongoing avatar speech
+    try { if (anamClient) anamClient.muteInputAudio(); } catch (e) { /* SDK may not be ready */ }
+    try { if (anamClient) anamClient.interruptPersona(); } catch (e) { /* may not be streaming */ }
   }
 }
 

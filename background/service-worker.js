@@ -10,31 +10,48 @@ importScripts('../config.js');
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a Lovable.dev prompt engineer and conversational building assistant. Your job is to
-take casual spoken instructions from a user and reformulate them into clear, specific prompts
-optimized for Lovable's AI builder. You also help the user think through their ideas mid-build.
+talk naturally with the user AND, when they give build instructions, reformulate them into clear,
+specific prompts optimized for Lovable's AI builder.
 
 Each user message includes a [BUILD_STATE] tag telling you whether Lovable is currently building or idle.
 
 Rules:
-1. Convert casual speech into structured, specific Lovable prompts
-2. Bias toward action — if you can build something reasonable from what the user said,
-   generate a [PROMPT]: immediately with sensible defaults for anything unspecified.
-   Do NOT ask about visual style, tech stack, or minor details unless the user raised them.
-3. If the request is genuinely ambiguous (could mean very different things), ask ONE
+1. You are a conversational assistant FIRST. Greet users warmly, answer their questions, discuss ideas,
+   and be a helpful partner. Not every utterance is a build instruction.
+2. Distinguish between CONVERSATION and BUILD INSTRUCTIONS.
+   - If the user is greeting you, asking a general question, thinking out loud, making small talk,
+     or saying something that is NOT a build/change instruction, respond with [CHAT]: and talk naturally.
+   - If the user gives a clear build or change instruction, generate a [PROMPT]: with sensible defaults
+     for anything unspecified. Do NOT ask about visual style, tech stack, or minor details unless
+     the user raised them.
+   - When in doubt whether the user wants to build something or just talk, prefer [CHAT]: over [PROMPT]:.
+     You can always ask "Would you like me to build that?" at the end of a [CHAT]: response.
+3. When generating [PROMPT]:, ALWAYS use the format: [PROMPT]: <spoken acknowledgment> ||| <Lovable prompt>
+   The spoken acknowledgment tells the user what you are about to build (e.g. "Alright, I will create
+   a todo app with a clean design for you."). The Lovable prompt after ||| is the optimized instruction
+   for Lovable. The ||| separator is mandatory.
+4. If the request is genuinely ambiguous (could mean very different things), ask ONE
    short clarifying question prefixed with [CLARIFY]:. Never bundle multiple questions.
-4. You may ask at most 2 clarifying questions total for any single build request.
+5. You may ask at most 2 clarifying questions total for any single build request.
    After 2 clarifications, generate the best [PROMPT]: you can with available info.
-5. Keep prompts concise but specific — Lovable works best with focused, single-task prompts
-6. Include technology preferences when relevant (React, Tailwind, shadcn/ui, Supabase)
-7. If the user is responding to a Lovable message, formulate the response as a direct answer
-8. Never include markdown formatting — plain text only
-9. For iterative changes, be specific about what component/section to modify
+6. Keep Lovable prompts concise but specific — Lovable works best with focused, single-task prompts
+7. Include technology preferences when relevant (React, Tailwind, shadcn/ui, Supabase)
+8. If the user is responding to a Lovable message, formulate the response as a direct answer
+9. Never include markdown formatting — plain text only
+10. For iterative changes, be specific about what component/section to modify
+11. BREVITY IS MANDATORY. Keep ALL responses under 2 sentences maximum. No filler phrases,
+    no lengthy pleasantries. Everything you say is spoken aloud by an avatar — long responses
+    are painful to listen to.
 
 MID-BUILD BEHAVIOR — When [BUILD_STATE] says Lovable is currently building:
 Determine the user's intent and respond with the appropriate prefix:
 
+CRITICAL RULE: If the user's new instruction contradicts, replaces, or changes the direction of
+the current build, this is ALWAYS a [CORRECT]:, never a [QUEUE]:. Indicators: "actually", "wait",
+"change", "instead", "no make it", "switch to", or any instruction that would make the current
+build wrong or obsolete. When in doubt between [CORRECT] and [QUEUE], prefer [CORRECT].
+
 A) DEFINITE COURSE CORRECTION — The user is clearly changing direction mid-build.
-   Indicators: "actually", "wait", "change it to", "no, make it", "instead", decisive/imperative tone.
    → Respond with: [CORRECT]: <spoken preamble to user> ||| <full corrected Lovable prompt>
    The preamble should briefly explain what you are doing (e.g. "Got it, I am stopping the current
    build and updating the instructions to use a black and white color scheme.").
@@ -47,15 +64,24 @@ B) TENTATIVE / EXPLORATORY — The user is thinking out loud or asking for your 
    Be conversational. Give a real opinion based on your expertise. Mention what Lovable is working on.
    End by asking whether to stop and change course or keep the current build going.
 
-C) NEW UNRELATED INSTRUCTION — The user wants something done after the current build finishes.
+C) NEW UNRELATED INSTRUCTION — The user wants something genuinely UNRELATED done after the current build finishes.
+   This MUST be completely unrelated to the current build. If it modifies, overrides, or changes the
+   current build in any way, use [CORRECT] instead.
    → Respond with: [QUEUE]: <spoken acknowledgment> ||| <reformulated Lovable prompt>
    The acknowledgment should confirm you will queue this for after the build finishes.
 
 D) STOP — The user wants to halt with no replacement.
    → Respond with: [STOP]: <brief description of what was cancelled>
 
+E) CONVERSATIONAL / NON-ACTIONABLE — The user is chatting, greeting, or asking a non-build question mid-build.
+   → Respond with: [CHAT]: <natural conversational response>
+   Do not stop or change the build. Just talk.
+
 WHEN IDLE (not building):
-Use the standard prefixes: [PROMPT]:, [CLARIFY]:, or [STOP]:.
+Use the standard prefixes: [CHAT]:, [PROMPT]:, [CLARIFY]:, or [STOP]:.
+Use [CHAT]: for all conversational, non-actionable responses (greetings, questions about you,
+general discussion, thinking out loud). The user should feel like they are talking to a real assistant,
+not a prompt machine.
 
 CONFIRMATION HANDLING:
 When the user says "yes", "do it", "go ahead", "sure", "let's do that" in response to a
@@ -66,8 +92,9 @@ When the user says "no", "keep going", "never mind", "nah", respond with:
 You receive the full conversation history including what Lovable has said back. Use this
 context to understand where the user is in their build process.
 
-Output ONLY the prefixed response. No preamble, no explanation. Keep spoken text natural and
-conversational — this will be read aloud by an avatar.`;
+Output ONLY the prefixed response. No preamble, no explanation outside the prefix.
+Keep ALL spoken text natural and conversational — everything you say will be read aloud by an avatar.
+For [CHAT]: responses, be warm but BRIEF — 1-2 sentences max. For [PROMPT]: preambles, ONE short sentence.`;
 
 const SUMMARIZE_PROMPT = `You clean up raw text captured from the Lovable.dev UI. The text may contain:
 - Echoed user prompts that were injected into Lovable
@@ -79,11 +106,13 @@ You also receive the last prompt that was sent to Lovable, so you can identify a
 
 Your job:
 1. Identify what Lovable actually said or did (ignore everything else)
-2. Summarize it in 1-2 short conversational sentences suitable for text-to-speech
-3. If a build failure is mentioned, clearly state that the build failed and what went wrong
-4. If there is no meaningful Lovable response in the text, output only: [EMPTY]
+2. Summarize it in ONE short sentence suitable for text-to-speech
+3. Always attribute work to Lovable — say "Lovable built..." or "Your page is ready..." — never "I created..." or "I built..."
+4. If a build failure is mentioned, clearly state that the build failed and what went wrong
+5. If the captured text is primarily an echo of the last prompt that was sent (the user's instruction repeated back), output only: [EMPTY]
+6. If there is no meaningful Lovable response in the text, output only: [EMPTY]
 
-Output ONLY the clean summary. No quotes, no preamble.`;
+Output ONLY the clean summary. No quotes, no preamble. ONE sentence maximum.`;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +122,9 @@ let conversationHistory = [];
 
 // Track the active Lovable tab ID so we can send messages to the right content script
 let lovableTabId = null;
+
+// Set of tab IDs that have confirmed their content script is loaded
+const readyTabs = new Set();
 
 // Rate limiting — prevent rapid-fire Claude API calls
 let lastApiCallTime = 0;
@@ -114,6 +146,9 @@ let lastSentPrompt = '';
 let pendingAction = null;      // { type: 'correct'|'queue', prompt: '...' }
 let awaitingConfirmation = false;
 
+// Deferred Lovable response — held until build finishes before avatar speaks
+let pendingLovableResponse = null;
+
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 // Restore conversation history from session storage on startup
@@ -127,6 +162,14 @@ chrome.storage.session.get('conversationHistory', (result) => {
 function persistHistory() {
   chrome.storage.session.set({ conversationHistory });
 }
+
+// ─── Tab Lifecycle ────────────────────────────────────────────────────────────
+
+// Clean up stale tab references when tabs close
+chrome.tabs.onRemoved.addListener((tabId) => {
+  readyTabs.delete(tabId);
+  if (lovableTabId === tabId) lovableTabId = null;
+});
 
 // ─── Side Panel Setup ─────────────────────────────────────────────────────────
 
@@ -142,10 +185,15 @@ async function reformulateWithClaude(userSpeech) {
   if (CONFIG.MOCK_MODE) {
     console.log('[FLB SW] MOCK MODE — skipping Claude API');
     const lower = userSpeech.toLowerCase();
+    if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey') ||
+        lower.includes('can you hear') || lower.includes('who are you') ||
+        lower.includes('how are you') || lower.includes('thanks') || lower.includes('thank you')) {
+      return '[CHAT]: Hey there! I can hear you perfectly. I\'m your building assistant — tell me what you\'d like to create and I\'ll get Lovable working on it for you.';
+    }
     if (lower.includes('?') || lower.includes('what') || lower.includes('how') || lower.includes('which')) {
       return '[CLARIFY]: Could you be more specific about what you\'d like to build? For example, what features should it have and what style are you going for?';
     }
-    return `[PROMPT]: Create a React component that ${userSpeech}. Use Tailwind CSS for styling and shadcn/ui components. Make it responsive and visually polished.`;
+    return `[PROMPT]: Got it, I'll build that for you now. ||| Create a React component that ${userSpeech}. Use Tailwind CSS for styling and shadcn/ui components. Make it responsive and visually polished.`;
   }
 
   // Build messages array from conversation history
@@ -188,7 +236,7 @@ async function reformulateWithClaude(userSpeech) {
     },
     body: JSON.stringify({
       model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 500,
+      max_tokens: 700,
       system: SYSTEM_PROMPT,
       messages: messages
     })
@@ -226,7 +274,7 @@ async function summarizeWithClaude(rawText, lastPrompt) {
     },
     body: JSON.stringify({
       model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 150,
+      max_tokens: 80,
       system: SUMMARIZE_PROMPT,
       messages: [{ role: 'user', content: userMessage }]
     })
@@ -242,6 +290,28 @@ async function summarizeWithClaude(rawText, lastPrompt) {
 
   if (summary === '[EMPTY]') return null;
   return summary;
+}
+
+// ─── Summarize & Speak Helper ─────────────────────────────────────────────────
+
+function summarizeAndSpeak(rawText) {
+  const lastPrompt = conversationHistory.slice().reverse()
+    .find(e => e.from === 'claude' && e.text.includes('[PROMPT]:'));
+  const promptCtx = lastPrompt
+    ? lastPrompt.text.replace('[PROMPT]:', '').trim()
+    : '';
+
+  summarizeWithClaude(rawText, promptCtx)
+    .then(summary => {
+      if (summary) {
+        console.log('[FLB SW] Summarized response:', summary);
+        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: summary });
+      }
+    })
+    .catch(err => {
+      console.error('[FLB SW] Summarize failed, using raw text:', err.message);
+      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: rawText });
+    });
 }
 
 // ─── Message History Management ───────────────────────────────────────────────
@@ -263,6 +333,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Track which tab has Lovable open (content script sends from lovable.dev)
   if (sender.tab && sender.tab.url && sender.tab.url.includes('lovable.dev')) {
     lovableTabId = sender.tab.id;
+  }
+
+  // Track content script ready signals
+  if (message.type === 'CONTENT_SCRIPT_READY' && sender.tab) {
+    readyTabs.add(sender.tab.id);
+    lovableTabId = sender.tab.id;
+    console.log('[FLB SW] Content script ready on tab', sender.tab.id, sender.tab.url);
+    sendResponse({ received: true });
+    return true;
   }
 
   switch (message.type) {
@@ -307,25 +386,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Show raw Lovable response in side panel immediately (blue bubble)
       broadcastToSidePanel({ type: 'LOVABLE_RAW_RESPONSE', text: message.text });
 
-      // Find the last prompt we sent for echo context
-      const lastPrompt = conversationHistory.slice().reverse()
-        .find(e => e.from === 'claude' && e.text.includes('[PROMPT]:'));
-      const promptCtx = lastPrompt
-        ? lastPrompt.text.replace('[PROMPT]:', '').trim()
-        : '';
+      // Echo detection: if response is primarily our own prompt echoed back, skip speech
+      if (lastSentPrompt && lastSentPrompt.length > 20) {
+        const responseNorm = message.text.toLowerCase().replace(/\s+/g, ' ').trim();
+        const promptNorm = lastSentPrompt.toLowerCase().replace(/\s+/g, ' ').trim();
+        if (responseNorm.startsWith(promptNorm.substring(0, 80)) ||
+            promptNorm.startsWith(responseNorm.substring(0, 80))) {
+          console.log('[FLB SW] Skipping echo of sent prompt');
+          sendResponse({ received: true });
+          return true;
+        }
+      }
 
-      summarizeWithClaude(message.text, promptCtx)
-        .then(summary => {
-          if (summary) {
-            console.log('[FLB SW] Summarized response:', summary);
-            broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: summary });
-          }
-        })
-        .catch(err => {
-          console.error('[FLB SW] Summarize failed, using raw text:', err.message);
-          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: message.text });
-        });
+      // If still building, defer speech until build completes
+      if (lovableBuildState === 'building') {
+        console.log('[FLB SW] Build in progress — deferring speech');
+        pendingLovableResponse = message.text; // keep only latest
+        sendResponse({ received: true });
+        return true;
+      }
 
+      // Build is idle — summarize and speak immediately
+      summarizeAndSpeak(message.text);
       sendResponse({ received: true });
       return true;
     }
@@ -345,7 +427,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         detail: message.detail || ''
       });
 
-      // If build just finished, check for queued prompts or send ready notification
+      // If build just finished, check for queued prompts, deferred responses, or send ready notification
       if (prevState === 'building' && message.status === 'idle') {
         if (pendingAction && pendingAction.type === 'queue') {
           // Auto-inject the queued prompt
@@ -358,6 +440,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: queuedPrompt });
           sendToLovableTab({ type: 'INJECT_PROMPT', prompt: queuedPrompt });
           addToHistory('claude', `[PROMPT]: ${queuedPrompt}`);
+        } else if (pendingLovableResponse) {
+          // Process deferred Lovable response now that build is done
+          const deferred = pendingLovableResponse;
+          pendingLovableResponse = null;
+          console.log('[FLB SW] Build finished — summarizing deferred response');
+          summarizeAndSpeak(deferred);
         } else {
           broadcastToSidePanel({
             type: 'CLARIFICATION',
@@ -585,6 +673,11 @@ function processUserSpeech(userText) {
         awaitingConfirmation = false;
         broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: ack });
 
+      // ── [CHAT]: Conversational response — speak only, no Lovable injection ──
+      } else if (claudeResponse.startsWith('[CHAT]:')) {
+        const chatText = claudeResponse.replace('[CHAT]:', '').trim();
+        broadcastToSidePanel({ type: 'CLARIFICATION', text: chatText });
+
       // ── [CLARIFY]: Standard clarification question ──
       } else if (claudeResponse.startsWith('[CLARIFY]:')) {
         const question = claudeResponse.replace('[CLARIFY]:', '').trim();
@@ -592,13 +685,26 @@ function processUserSpeech(userText) {
 
       // ── [PROMPT]: Standard prompt (or fallback) ──
       } else {
-        const prompt = claudeResponse.startsWith('[PROMPT]:')
+        const raw = claudeResponse.startsWith('[PROMPT]:')
           ? claudeResponse.replace('[PROMPT]:', '').trim()
           : claudeResponse.trim();
 
-        lastSentPrompt = prompt;
-        broadcastToSidePanel({ type: 'PROMPT_SENT', prompt });
-        sendToLovableTab({ type: 'INJECT_PROMPT', prompt });
+        const parts = raw.split('|||');
+        if (parts.length >= 2) {
+          // New format: spoken preamble ||| Lovable prompt
+          const spokenPreamble = parts[0].trim();
+          const lovablePrompt = parts.slice(1).join('|||').trim();
+
+          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenPreamble });
+          lastSentPrompt = lovablePrompt;
+          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: lovablePrompt });
+          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: lovablePrompt });
+        } else {
+          // Fallback: no separator — treat entire text as Lovable prompt
+          lastSentPrompt = raw;
+          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: raw });
+          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: raw });
+        }
       }
     })
     .catch(err => {
@@ -665,11 +771,13 @@ function sendToLovableTab(message) {
       return;
     }
 
-    // Pick the best tab: prefer the active one, then dashboard, then any project
-    const activeTab = tabs.find(t => t.active);
-    const dashboardTab = tabs.find(t => t.url.includes('/dashboard'));
-    const projectTab = tabs.find(t => t.url.includes('/projects/'));
-    const bestTab = activeTab || dashboardTab || projectTab || tabs[0];
+    // Pick the best tab: prefer ready + active, then project tabs, then any
+    const readyTabsList = tabs.filter(t => readyTabs.has(t.id));
+    const pool = readyTabsList.length > 0 ? readyTabsList : tabs;
+    const activeTab = pool.find(t => t.active);
+    const projectTab = pool.find(t => t.url.includes('/projects/'));
+    const dashboardTab = pool.find(t => t.url.includes('/dashboard'));
+    const bestTab = activeTab || projectTab || dashboardTab || pool[0];
     console.log('[FLB SW] Selected tab:', bestTab.id, bestTab.url);
 
     lovableTabId = bestTab.id;
@@ -679,12 +787,48 @@ function sendToLovableTab(message) {
   });
 }
 
-// Try sending a message to tabs one at a time until one succeeds
-function tryTabsInOrder(tabs, message) {
+// Try sending a message to tabs one at a time until one succeeds.
+// If all fail, auto-inject the content script and retry once.
+function tryTabsInOrder(tabs, message, alreadyInjected = false) {
   if (tabs.length === 0) {
-    broadcastToSidePanel({
-      type: 'INJECTION_ERROR',
-      error: 'Could not reach content script on any Lovable tab. Try reloading the Lovable page.'
+    if (alreadyInjected) {
+      // Already tried injecting — give up with a helpful error
+      broadcastToSidePanel({
+        type: 'INJECTION_ERROR',
+        error: 'Could not reach Lovable. Open a Lovable project page and try again.'
+      });
+      return;
+    }
+
+    // Auto-inject content script on all lovable tabs and retry
+    console.log('[FLB SW] All tabs unreachable — auto-injecting content script…');
+    chrome.tabs.query({ url: ['https://lovable.dev/*', 'https://*.lovable.dev/*'] }, (allTabs) => {
+      if (allTabs.length === 0) {
+        broadcastToSidePanel({
+          type: 'INJECTION_ERROR',
+          error: 'No Lovable tab found. Open lovable.dev in a project first.'
+        });
+        return;
+      }
+
+      // Inject content script into all Lovable tabs
+      const injections = allTabs.map(tab =>
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content-script.js']
+        }).catch(err => {
+          console.warn('[FLB SW] Could not inject into tab', tab.id, ':', err.message);
+          return null;
+        })
+      );
+
+      Promise.all(injections).then(() => {
+        // Brief delay for the content script to initialize
+        setTimeout(() => {
+          console.log('[FLB SW] Retrying after auto-injection…');
+          tryTabsInOrder(allTabs, message, true);
+        }, 300);
+      });
     });
     return;
   }
@@ -694,9 +838,11 @@ function tryTabsInOrder(tabs, message) {
     .then(() => {
       console.log('[FLB SW] Message delivered to tab', tab.id, tab.url);
       lovableTabId = tab.id; // Cache the working tab
+      readyTabs.add(tab.id);
     })
     .catch(err => {
       console.warn('[FLB SW] Tab', tab.id, 'unreachable:', err.message, '— trying next…');
-      tryTabsInOrder(tabs.slice(1), message);
+      readyTabs.delete(tab.id);
+      tryTabsInOrder(tabs.slice(1), message, alreadyInjected);
     });
 }
