@@ -313,8 +313,12 @@ document.getElementById('text-input').addEventListener('keydown', (e) => {
 
 function sendManualInput() {
   const input = document.getElementById('text-input');
-  const text = input.value.trim();
+  let text = input.value.trim();
   if (!text) return;
+  // Enforce input length limit before sending
+  if (text.length > CONFIG.MAX_SPEECH_LENGTH) {
+    text = text.substring(0, CONFIG.MAX_SPEECH_LENGTH);
+  }
   input.value = '';
   addChatMessage('user', text);
   handleUserSpeech(text);
@@ -353,15 +357,22 @@ function addChatMessage(role, text) {
   const labelMap = { assistant: 'Avatar', user: 'You', lovable: 'Lovable' };
   const labelText = labelMap[role] || '';
 
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-
   if (role === 'system') {
     msg.textContent = text;
   } else {
-    msg.innerHTML =
-      (labelText ? `<span class="msg-label">${labelText}</span>` : '') +
-      escapeHtml(text) +
-      `<span class="msg-time">${time}</span>`;
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    // Build message with DOM API instead of innerHTML to eliminate XSS vectors
+    if (labelText) {
+      const label = document.createElement('span');
+      label.className = 'msg-label';
+      label.textContent = labelText;
+      msg.appendChild(label);
+    }
+    msg.appendChild(document.createTextNode(text));
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'msg-time';
+    timeSpan.textContent = time;
+    msg.appendChild(timeSpan);
   }
 
   container.appendChild(msg);
@@ -378,11 +389,6 @@ function addChatMessage(role, text) {
   }
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
 
 // ─── Debug Log ───────────────────────────────────────────────────────────────
 
@@ -398,6 +404,16 @@ function debugLog(label, data) {
   log.textContent += `[${time}] ${label}: ${preview}\n`;
   log.scrollTop = log.scrollHeight;
 }
+
+// ─── Global Error Handling ───────────────────────────────────────────────────
+
+window.addEventListener('error', (event) => {
+  console.error('[FLB Panel] Uncaught error:', event.message, event.filename, event.lineno);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('[FLB Panel] Unhandled promise rejection:', event.reason);
+});
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 

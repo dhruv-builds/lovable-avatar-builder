@@ -114,53 +114,99 @@ Your job:
 
 Output ONLY the clean summary. No quotes, no preamble. ONE sentence maximum.`;
 
+// ─── Timing Constants ────────────────────────────────────────────────────────
+// All timing values in one place for easy tuning and debugging.
+//
+// Timing chain diagram:
+//   User speaks → [API_COOLDOWN_MS gap] → Claude API call
+//   Claude responds → [STOP_REINJECT_DELAY_MS] → inject corrected prompt (after stop)
+//   Inject prompt → [ECHO_SUPPRESSION_MS] → observer re-enabled
+//   Observer fires → [DEBOUNCE_MS in content script] → extract response
+//   Content script auto-inject retry → [AUTO_INJECT_DELAY_MS] → retry after script injection
+
+const API_COOLDOWN_MS = 2000;           // Min gap between Claude API calls
+const MAX_API_CALLS_PER_MINUTE = 15;    // Hard cap on calls per 60s window
+const STOP_REINJECT_DELAY_MS = 1500;    // Wait after stop before injecting corrected prompt
+const AUTO_INJECT_DELAY_MS = 300;       // Wait after auto-injecting content script before retry
+const STOP_PATTERN = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i;
+
 // ─── State ────────────────────────────────────────────────────────────────────
+// All mutable state consolidated into one object for traceability.
 
-// conversationHistory stores the full exchange: user speech, Claude responses, and Lovable responses
-// [{ from: 'user'|'claude'|'lovable', text: string }]
-let conversationHistory = [];
+/**
+ * @typedef {Object} AppState
+ * @property {Array<{from: 'user'|'claude'|'lovable', text: string}>} conversationHistory - Full exchange history
+ * @property {number|null} lovableTabId - Active Lovable tab ID for message routing
+ * @property {number} lastApiCallTime - Timestamp of last Claude API call (rate limiting)
+ * @property {string|null} pendingSpeech - Queued speech waiting for rate limit cooldown
+ * @property {number|null} rateLimitTimer - Timer ID for rate-limited speech queue
+ * @property {Array<number>} apiCallTimestamps - Timestamps for per-minute rate cap
+ * @property {'idle'|'building'} lovableBuildState - Whether Lovable is actively building
+ * @property {string} lovableBuildDetail - Human-readable build status detail
+ * @property {boolean} autoRetryUsed - Guard: at most one auto-retry per user prompt cycle
+ * @property {string} lastSentPrompt - Last prompt injected into Lovable (for echo detection)
+ * @property {{type: 'correct'|'queue', prompt: string}|null} pendingAction - Queued action from [DISCUSS]/[QUEUE]
+ * @property {boolean} awaitingConfirmation - Whether we're waiting for user to confirm/dismiss
+ * @property {string|null} pendingLovableResponse - Deferred response held during build
+ */
+const state = {
+  conversationHistory: [],
+  lovableTabId: null,
+  lastApiCallTime: 0,
+  pendingSpeech: null,
+  rateLimitTimer: null,
+  apiCallTimestamps: [],
+  lovableBuildState: 'idle',
+  lovableBuildDetail: '',
+  autoRetryUsed: false,
+  lastSentPrompt: '',
+  pendingAction: null,
+  awaitingConfirmation: false,
+  pendingLovableResponse: null
+};
 
-// Track the active Lovable tab ID so we can send messages to the right content script
-let lovableTabId = null;
+/** Reset all transient state (preserves readyTabs which tracks tab lifecycle separately) */
+function resetState() {
+  state.conversationHistory = [];
+  state.lastApiCallTime = 0;
+  state.pendingSpeech = null;
+  clearTimeout(state.rateLimitTimer);
+  state.rateLimitTimer = null;
+  state.apiCallTimestamps = [];
+  state.lovableBuildState = 'idle';
+  state.lovableBuildDetail = '';
+  state.autoRetryUsed = false;
+  state.lastSentPrompt = '';
+  state.pendingAction = null;
+  state.awaitingConfirmation = false;
+  state.pendingLovableResponse = null;
+}
 
 // Set of tab IDs that have confirmed their content script is loaded
 const readyTabs = new Set();
 
-// Rate limiting — prevent rapid-fire Claude API calls
-let lastApiCallTime = 0;
-let pendingSpeech = null;
-let rateLimitTimer = null;
-const API_COOLDOWN_MS = 2000; // Minimum 2s between API calls
+// ─── Global Error Handling ───────────────────────────────────────────────────
 
-// Build state — track whether Lovable is actively building
-let lovableBuildState = 'idle'; // 'idle' | 'building'
-let lovableBuildDetail = '';
-
-// Auto-retry guard — at most one automatic retry per user prompt cycle
-let autoRetryUsed = false;
-
-// Track the last prompt sent to Lovable (for build-state context)
-let lastSentPrompt = '';
-
-// Confirmation state machine — for tentative/exploratory mid-build speech
-let pendingAction = null;      // { type: 'correct'|'queue', prompt: '...' }
-let awaitingConfirmation = false;
-
-// Deferred Lovable response — held until build finishes before avatar speaks
-let pendingLovableResponse = null;
+self.addEventListener('unhandledrejection', (event) => {
+  console.error('[FLB SW] Unhandled promise rejection:', event.reason);
+  broadcastToSidePanel({
+    type: 'CLARIFICATION',
+    text: 'Something went wrong internally. If the issue persists, try resetting the conversation.'
+  });
+});
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 // Restore conversation history from session storage on startup
 chrome.storage.session.get('conversationHistory', (result) => {
   if (result.conversationHistory) {
-    conversationHistory = result.conversationHistory;
-    console.log('[FLB SW] Restored', conversationHistory.length, 'history entries from session storage');
+    state.conversationHistory = result.conversationHistory;
+    console.log('[FLB SW] Restored', state.conversationHistory.length, 'history entries from session storage');
   }
 });
 
 function persistHistory() {
-  chrome.storage.session.set({ conversationHistory });
+  chrome.storage.session.set({ conversationHistory: state.conversationHistory });
 }
 
 // ─── Tab Lifecycle ────────────────────────────────────────────────────────────
@@ -168,7 +214,7 @@ function persistHistory() {
 // Clean up stale tab references when tabs close
 chrome.tabs.onRemoved.addListener((tabId) => {
   readyTabs.delete(tabId);
-  if (lovableTabId === tabId) lovableTabId = null;
+  if (state.lovableTabId === tabId) state.lovableTabId = null;
 });
 
 // ─── Side Panel Setup ─────────────────────────────────────────────────────────
@@ -180,7 +226,65 @@ chrome.action.onClicked.addListener((tab) => {
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
 
+/**
+ * Check per-minute rate cap. Returns true if the call is allowed.
+ * Trims timestamps older than 60s and enforces MAX_API_CALLS_PER_MINUTE.
+ */
+function checkRateCap() {
+  const now = Date.now();
+  state.apiCallTimestamps = state.apiCallTimestamps.filter(t => now - t < 60000);
+  if (state.apiCallTimestamps.length >= MAX_API_CALLS_PER_MINUTE) {
+    console.warn('[FLB SW] Per-minute rate cap hit (' + MAX_API_CALLS_PER_MINUTE + ' calls/min). Dropping request.');
+    broadcastToSidePanel({
+      type: 'CLARIFICATION',
+      text: 'Slow down — too many requests. Wait a moment and try again.'
+    });
+    return false;
+  }
+  state.apiCallTimestamps.push(now);
+  return true;
+}
+
+/**
+ * Shared Claude API caller. Handles fetch, headers, error checking, and response extraction.
+ * Required for Chrome extension direct browser API calls (no backend proxy).
+ * Acceptable for personal-use only. For team/production use, route through a server.
+ * @param {Object} opts
+ * @param {string} opts.systemPrompt - System prompt for Claude
+ * @param {Array} opts.messages - Messages array
+ * @param {number} opts.maxTokens - Max tokens for response
+ * @returns {Promise<string>} Claude's response text
+ */
+async function callClaudeAPI({ systemPrompt, messages, maxTokens }) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: CONFIG.ANTHROPIC_MODEL,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages
+    })
+  });
+
+  if (!response.ok) {
+    console.error('[FLB SW] Claude API error:', response.status);
+    throw new Error('Could not reach Claude. Check your internet connection and API key.');
+  }
+
+  const data = await response.json();
+  return data.content[0].text;
+}
+
 async function reformulateWithClaude(userSpeech) {
+  // Per-minute rate cap check
+  if (!checkRateCap()) return '[CHAT]: Please wait a moment before sending another message.';
+
   // Mock mode — return canned responses without calling Claude API
   if (CONFIG.MOCK_MODE) {
     console.log('[FLB SW] MOCK MODE — skipping Claude API');
@@ -197,10 +301,7 @@ async function reformulateWithClaude(userSpeech) {
   }
 
   // Build messages array from conversation history
-  // Mapping: user speech → role: 'user', claude output → role: 'assistant',
-  //          lovable responses → role: 'user' with prefix (so Claude sees them as context, not its own output)
-  // Claude API requires alternating user/assistant roles, so we merge consecutive same-role messages.
-  const rawMessages = conversationHistory.map(entry => {
+  const rawMessages = state.conversationHistory.map(entry => {
     if (entry.from === 'user') {
       return { role: 'user', content: entry.text };
     } else if (entry.from === 'claude') {
@@ -209,9 +310,9 @@ async function reformulateWithClaude(userSpeech) {
       return { role: 'user', content: `[Lovable responded]: ${entry.text}` };
     }
   });
-  // Inject build-state context so Claude knows whether Lovable is currently working
-  const buildContext = lovableBuildState === 'building'
-    ? `[BUILD_STATE: Lovable is currently building.${lastSentPrompt ? ` Last prompt sent: "${lastSentPrompt}"` : ''}${lovableBuildDetail ? ` Status: ${lovableBuildDetail}` : ''}]`
+
+  const buildContext = state.lovableBuildState === 'building'
+    ? `[BUILD_STATE: Lovable is currently building.${state.lastSentPrompt ? ` Last prompt sent: "${state.lastSentPrompt}"` : ''}${state.lovableBuildDetail ? ` Status: ${state.lovableBuildDetail}` : ''}]`
     : '[BUILD_STATE: Lovable is idle and ready for a new prompt.]';
 
   rawMessages.push({ role: 'user', content: `${buildContext}\n\n${userSpeech}` });
@@ -226,29 +327,7 @@ async function reformulateWithClaude(userSpeech) {
     }
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': CONFIG.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 700,
-      system: SYSTEM_PROMPT,
-      messages: messages
-    })
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${err}`);
-  }
-
-  const data = await response.json();
-  return data.content[0].text;
+  return callClaudeAPI({ systemPrompt: SYSTEM_PROMPT, messages, maxTokens: 700 });
 }
 
 // ─── Claude Response Summarizer ──────────────────────────────────────────────
@@ -264,30 +343,13 @@ async function summarizeWithClaude(rawText, lastPrompt) {
     ? `Last prompt sent to Lovable:\n${lastPrompt}\n\nRaw captured text:\n${rawText}`
     : `Raw captured text:\n${rawText}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': CONFIG.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 80,
-      system: SUMMARIZE_PROMPT,
-      messages: [{ role: 'user', content: userMessage }]
-    })
+  const text = await callClaudeAPI({
+    systemPrompt: SUMMARIZE_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
+    maxTokens: 80
   });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Claude summarize error ${response.status}: ${err}`);
-  }
-
-  const data = await response.json();
-  const summary = data.content[0].text.trim();
-
+  const summary = text.trim();
   if (summary === '[EMPTY]') return null;
   return summary;
 }
@@ -295,8 +357,9 @@ async function summarizeWithClaude(rawText, lastPrompt) {
 // ─── Summarize & Speak Helper ─────────────────────────────────────────────────
 
 function summarizeAndSpeak(rawText) {
-  const lastPrompt = conversationHistory.slice().reverse()
-    .find(e => e.from === 'claude' && e.text.includes('[PROMPT]:'));
+  const lastPrompt = state.conversationHistory.findLast(
+    e => e.from === 'claude' && e.text.includes('[PROMPT]:')
+  );
   const promptCtx = lastPrompt
     ? lastPrompt.text.replace('[PROMPT]:', '').trim()
     : '';
@@ -317,11 +380,11 @@ function summarizeAndSpeak(rawText) {
 // ─── Message History Management ───────────────────────────────────────────────
 
 function addToHistory(from, text) {
-  conversationHistory.push({ from, text });
+  state.conversationHistory.push({ from, text });
   // Trim to max window
-  if (conversationHistory.length > CONFIG.MAX_CONVERSATION_HISTORY) {
-    conversationHistory = conversationHistory.slice(
-      conversationHistory.length - CONFIG.MAX_CONVERSATION_HISTORY
+  if (state.conversationHistory.length > CONFIG.MAX_CONVERSATION_HISTORY) {
+    state.conversationHistory = state.conversationHistory.slice(
+      state.conversationHistory.length - CONFIG.MAX_CONVERSATION_HISTORY
     );
   }
   persistHistory();
@@ -332,13 +395,13 @@ function addToHistory(from, text) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Track which tab has Lovable open (content script sends from lovable.dev)
   if (sender.tab && sender.tab.url && sender.tab.url.includes('lovable.dev')) {
-    lovableTabId = sender.tab.id;
+    state.lovableTabId = sender.tab.id;
   }
 
   // Track content script ready signals
   if (message.type === 'CONTENT_SCRIPT_READY' && sender.tab) {
     readyTabs.add(sender.tab.id);
-    lovableTabId = sender.tab.id;
+    state.lovableTabId = sender.tab.id;
     console.log('[FLB SW] Content script ready on tab', sender.tab.id, sender.tab.url);
     sendResponse({ received: true });
     return true;
@@ -350,23 +413,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'USER_SPEECH': {
       const userText = message.text;
 
-      // Allow stop commands even while building (fast-path, no Claude call needed)
-      const isStopCommand = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i.test(userText.trim());
-
-      // Mid-build speech is now routed through Claude instead of blocked.
-      // Claude will determine intent: course correction, discussion, queue, or stop.
-
       // Rate limiting — prevent rapid-fire API calls
       const now = Date.now();
-      const elapsed = now - lastApiCallTime;
+      const elapsed = now - state.lastApiCallTime;
 
       if (elapsed < API_COOLDOWN_MS) {
         // Queue this speech; discard any previously queued speech
-        clearTimeout(rateLimitTimer);
-        pendingSpeech = userText;
-        rateLimitTimer = setTimeout(() => {
-          const queued = pendingSpeech;
-          pendingSpeech = null;
+        clearTimeout(state.rateLimitTimer);
+        state.pendingSpeech = userText;
+        state.rateLimitTimer = setTimeout(() => {
+          const queued = state.pendingSpeech;
+          state.pendingSpeech = null;
           if (queued) processUserSpeech(queued);
         }, API_COOLDOWN_MS - elapsed);
         console.log('[FLB SW] Rate limited — queued speech, will process in', API_COOLDOWN_MS - elapsed, 'ms');
@@ -387,9 +444,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       broadcastToSidePanel({ type: 'LOVABLE_RAW_RESPONSE', text: message.text });
 
       // Echo detection: if response is primarily our own prompt echoed back, skip speech
-      if (lastSentPrompt && lastSentPrompt.length > 20) {
+      if (state.lastSentPrompt && state.lastSentPrompt.length > 20) {
         const responseNorm = message.text.toLowerCase().replace(/\s+/g, ' ').trim();
-        const promptNorm = lastSentPrompt.toLowerCase().replace(/\s+/g, ' ').trim();
+        const promptNorm = state.lastSentPrompt.toLowerCase().replace(/\s+/g, ' ').trim();
         if (responseNorm.startsWith(promptNorm.substring(0, 80)) ||
             promptNorm.startsWith(responseNorm.substring(0, 80))) {
           console.log('[FLB SW] Skipping echo of sent prompt');
@@ -399,9 +456,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       // If still building, defer speech until build completes
-      if (lovableBuildState === 'building') {
+      if (state.lovableBuildState === 'building') {
         console.log('[FLB SW] Build in progress — deferring speech');
-        pendingLovableResponse = message.text; // keep only latest
+        state.pendingLovableResponse = message.text; // keep only latest
         sendResponse({ received: true });
         return true;
       }
@@ -414,11 +471,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Status update from content script ─────────────────────────────────────
     case 'LOVABLE_STATUS': {
-      const prevState = lovableBuildState;
-      lovableBuildState = message.status;
-      lovableBuildDetail = message.detail || '';
+      const prevState = state.lovableBuildState;
+      state.lovableBuildState = message.status;
+      state.lovableBuildDetail = message.detail || '';
 
-      console.log('[FLB SW] Build state:', prevState, '→', message.status, lovableBuildDetail);
+      console.log('[FLB SW] Build state:', prevState, '→', message.status, state.lovableBuildDetail);
 
       // Notify sidepanel of state change
       broadcastToSidePanel({
@@ -429,21 +486,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // If build just finished, check for queued prompts, deferred responses, or send ready notification
       if (prevState === 'building' && message.status === 'idle') {
-        if (pendingAction && pendingAction.type === 'queue') {
+        if (state.pendingAction && state.pendingAction.type === 'queue') {
           // Auto-inject the queued prompt
-          const queuedPrompt = pendingAction.prompt;
-          pendingAction = null;
-          awaitingConfirmation = false;
+          const queuedPrompt = state.pendingAction.prompt;
+          state.pendingAction = null;
+          state.awaitingConfirmation = false;
           console.log('[FLB SW] Build finished — injecting queued prompt:', queuedPrompt);
-          lastSentPrompt = queuedPrompt;
           broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Lovable finished. Now sending your queued instruction.' });
-          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: queuedPrompt });
-          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: queuedPrompt });
-          addToHistory('claude', `[PROMPT]: ${queuedPrompt}`);
-        } else if (pendingLovableResponse) {
+          injectAndBroadcast(queuedPrompt);
+        } else if (state.pendingLovableResponse) {
           // Process deferred Lovable response now that build is done
-          const deferred = pendingLovableResponse;
-          pendingLovableResponse = null;
+          const deferred = state.pendingLovableResponse;
+          state.pendingLovableResponse = null;
           console.log('[FLB SW] Build finished — summarizing deferred response');
           summarizeAndSpeak(deferred);
         } else {
@@ -472,7 +526,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'BUILD_FAILED': {
       console.log('[FLB SW] Build failed:', message.error);
 
-      if (autoRetryUsed) {
+      if (state.autoRetryUsed) {
         // Already retried once — just report to user
         broadcastToSidePanel({
           type: 'SPEAK_RESPONSE',
@@ -482,7 +536,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
       }
 
-      autoRetryUsed = true;
+      state.autoRetryUsed = true;
 
       // Tell the user what's happening
       broadcastToSidePanel({
@@ -492,9 +546,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // Inject a fix-it prompt
       const fixPrompt = `The previous build failed with this error: ${message.error}. Please diagnose the error and fix it so the build succeeds.`;
-      broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: fixPrompt });
-      sendToLovableTab({ type: 'INJECT_PROMPT', prompt: fixPrompt });
-      addToHistory('claude', `[PROMPT]: ${fixPrompt}`);
+      injectAndBroadcast(fixPrompt);
 
       sendResponse({ received: true });
       return true;
@@ -503,25 +555,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Stop result from content script ────────────────────────────────────────
     case 'STOP_RESULT': {
       // If there's a pending correction prompt, inject it after stop
-      if (pendingAction && pendingAction.type === 'correct') {
-        const correctedPrompt = pendingAction.prompt;
-        pendingAction = null;
-        awaitingConfirmation = false;
+      if (state.pendingAction && state.pendingAction.type === 'correct') {
+        const correctedPrompt = state.pendingAction.prompt;
+        state.pendingAction = null;
+        state.awaitingConfirmation = false;
 
         if (message.success) {
           // Wait for Lovable UI to reset after stop, then inject corrected prompt
-          setTimeout(() => {
-            lastSentPrompt = correctedPrompt;
-            broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: correctedPrompt });
-            sendToLovableTab({ type: 'INJECT_PROMPT', prompt: correctedPrompt });
-            addToHistory('claude', `[PROMPT]: ${correctedPrompt}`);
-          }, 1500);
+          setTimeout(() => injectAndBroadcast(correctedPrompt), STOP_REINJECT_DELAY_MS);
         } else {
           // Stop button not found — build may have finished, inject anyway
-          lastSentPrompt = correctedPrompt;
-          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: correctedPrompt });
-          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: correctedPrompt });
-          addToHistory('claude', `[PROMPT]: ${correctedPrompt}`);
+          injectAndBroadcast(correctedPrompt);
         }
       } else {
         // Plain stop — no follow-up prompt
@@ -536,11 +580,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Reset conversation ─────────────────────────────────────────────────────
     case 'RESET_CONVERSATION': {
-      conversationHistory = [];
+      resetState();
       persistHistory();
-      lastSentPrompt = '';
-      pendingAction = null;
-      awaitingConfirmation = false;
       sendResponse({ received: true });
       return true;
     }
@@ -550,44 +591,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ─── Process Speech ──────────────────────────────────────────────────────────
 
 function processUserSpeech(userText) {
-  lastApiCallTime = Date.now();
-  autoRetryUsed = false; // Reset retry guard on each new user prompt
+  // Enforce input length limit to prevent unbounded API costs
+  if (userText.length > CONFIG.MAX_SPEECH_LENGTH) {
+    userText = userText.substring(0, CONFIG.MAX_SPEECH_LENGTH);
+    console.log('[FLB SW] Input truncated to', CONFIG.MAX_SPEECH_LENGTH, 'chars');
+  }
+
+  state.lastApiCallTime = Date.now();
+  state.autoRetryUsed = false; // Reset retry guard on each new user prompt
 
   // Fast-path: detect stop intent via keywords before calling Claude
-  const stopPattern = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i;
-  if (stopPattern.test(userText.trim())) {
+  if (STOP_PATTERN.test(userText.trim())) {
     addToHistory('user', userText);
     addToHistory('claude', '[STOP]: User requested stop');
-    pendingAction = null;
-    awaitingConfirmation = false;
+    state.pendingAction = null;
+    state.awaitingConfirmation = false;
     broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Stopping Lovable now.' });
     sendToLovableTab({ type: 'CLICK_STOP' });
     return;
   }
 
   // Confirmation state machine — check if user is responding to a [DISCUSS]: message
-  if (awaitingConfirmation) {
+  if (state.awaitingConfirmation) {
     const confirmPattern = /^(yes|yeah|yep|do it|go ahead|sure|let's do that|let's do it|ok|okay|go for it|absolutely|please)$/i;
     const dismissPattern = /^(no|nah|nope|keep going|never mind|nevermind|cancel|forget it|don't|leave it)$/i;
 
     if (confirmPattern.test(userText.trim())) {
       addToHistory('user', userText);
-      if (pendingAction && pendingAction.prompt) {
+      if (state.pendingAction && state.pendingAction.prompt) {
         // We already have the prompt — execute directly
-        console.log('[FLB SW] User confirmed pending action:', pendingAction.type);
-        if (pendingAction.type === 'correct') {
-          addToHistory('claude', `[CONFIRM]: ${pendingAction.prompt}`);
-          stopAndCorrect(pendingAction.prompt, 'Alright, stopping the build and applying the change now.');
-        } else if (pendingAction.type === 'queue') {
-          addToHistory('claude', `[CONFIRM]: Queued — ${pendingAction.prompt}`);
+        console.log('[FLB SW] User confirmed pending action:', state.pendingAction.type);
+        if (state.pendingAction.type === 'correct') {
+          addToHistory('claude', `[CONFIRM]: ${state.pendingAction.prompt}`);
+          stopAndCorrect(state.pendingAction.prompt, 'Alright, stopping the build and applying the change now.');
+        } else if (state.pendingAction.type === 'queue') {
+          addToHistory('claude', `[CONFIRM]: Queued — ${state.pendingAction.prompt}`);
           broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: "Got it, I'll send that once the current build finishes." });
-          // pendingAction stays as queue — will be auto-injected on idle transition
+          // state.pendingAction stays as queue — will be auto-injected on idle transition
         }
-        awaitingConfirmation = false;
+        state.awaitingConfirmation = false;
       } else {
         // No prompt stored yet — route through Claude to generate the action prompt
-        awaitingConfirmation = false;
-        pendingAction = null;
+        state.awaitingConfirmation = false;
+        state.pendingAction = null;
         reformulateWithClaude(userText)
           .then(claudeResponse => {
             addToHistory('claude', claudeResponse);
@@ -596,7 +642,7 @@ function processUserSpeech(userText) {
               stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
             } else if (claudeResponse.startsWith('[PROMPT]:')) {
               const prompt = claudeResponse.replace('[PROMPT]:', '').trim();
-              lastSentPrompt = prompt;
+              state.lastSentPrompt = prompt;
               stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
             }
           })
@@ -610,15 +656,15 @@ function processUserSpeech(userText) {
     if (dismissPattern.test(userText.trim())) {
       addToHistory('user', userText);
       addToHistory('claude', '[DISMISS]: User chose to keep current build');
-      pendingAction = null;
-      awaitingConfirmation = false;
+      state.pendingAction = null;
+      state.awaitingConfirmation = false;
       broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Alright, keeping the current build going.' });
       return;
     }
 
     // Not a simple yes/no — clear confirmation state and route through Claude normally
-    pendingAction = null;
-    awaitingConfirmation = false;
+    state.pendingAction = null;
+    state.awaitingConfirmation = false;
   }
 
   addToHistory('user', userText);
@@ -647,8 +693,8 @@ function processUserSpeech(userText) {
         broadcastToSidePanel({ type: 'CLARIFICATION', text: discussion });
         // Store a pending correction action in case user confirms
         // Claude's next response will be [CONFIRM]: with the actual prompt
-        pendingAction = { type: 'correct', prompt: '' }; // prompt will come from [CONFIRM]:
-        awaitingConfirmation = true;
+        state.pendingAction = { type: 'correct', prompt: '' }; // prompt will come from [CONFIRM]:
+        state.awaitingConfirmation = true;
 
       // ── [QUEUE]: New instruction for after current build finishes ──
       } else if (claudeResponse.startsWith('[QUEUE]:')) {
@@ -656,21 +702,21 @@ function processUserSpeech(userText) {
         const parts = body.split('|||');
         const spokenAck = parts[0].trim();
         const queuedPrompt = (parts[1] || parts[0]).trim();
-        pendingAction = { type: 'queue', prompt: queuedPrompt };
+        state.pendingAction = { type: 'queue', prompt: queuedPrompt };
         broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenAck });
 
       // ── [CONFIRM]: User confirmed a discussed action ──
       } else if (claudeResponse.startsWith('[CONFIRM]:')) {
         const prompt = claudeResponse.replace('[CONFIRM]:', '').trim();
-        pendingAction = { type: 'correct', prompt };
-        awaitingConfirmation = false;
+        state.pendingAction = { type: 'correct', prompt };
+        state.awaitingConfirmation = false;
         stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
 
       // ── [DISMISS]: User declined a discussed action ──
       } else if (claudeResponse.startsWith('[DISMISS]:')) {
         const ack = claudeResponse.replace('[DISMISS]:', '').trim();
-        pendingAction = null;
-        awaitingConfirmation = false;
+        state.pendingAction = null;
+        state.awaitingConfirmation = false;
         broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: ack });
 
       // ── [CHAT]: Conversational response — speak only, no Lovable injection ──
@@ -696,14 +742,10 @@ function processUserSpeech(userText) {
           const lovablePrompt = parts.slice(1).join('|||').trim();
 
           broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenPreamble });
-          lastSentPrompt = lovablePrompt;
-          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: lovablePrompt });
-          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: lovablePrompt });
+          injectAndBroadcast(lovablePrompt);
         } else {
           // Fallback: no separator — treat entire text as Lovable prompt
-          lastSentPrompt = raw;
-          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: raw });
-          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: raw });
+          injectAndBroadcast(raw);
         }
       }
     })
@@ -725,7 +767,7 @@ function stopAndCorrect(correctedPrompt, spokenPreamble) {
   broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenPreamble });
 
   // Store the corrected prompt so STOP_RESULT handler can inject it
-  pendingAction = { type: 'correct', prompt: correctedPrompt };
+  state.pendingAction = { type: 'correct', prompt: correctedPrompt };
 
   // Send stop command to content script
   sendToLovableTab({ type: 'CLICK_STOP' });
@@ -733,6 +775,14 @@ function stopAndCorrect(correctedPrompt, spokenPreamble) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Set lastSentPrompt, broadcast to sidepanel, inject into Lovable, and optionally record in history. */
+function injectAndBroadcast(prompt, { addHistory = true } = {}) {
+  state.lastSentPrompt = prompt;
+  broadcastToSidePanel({ type: 'PROMPT_SENT', prompt });
+  sendToLovableTab({ type: 'INJECT_PROMPT', prompt });
+  if (addHistory) addToHistory('claude', `[PROMPT]: ${prompt}`);
+}
 
 // Send a message to all extension pages (side panel listens here)
 function broadcastToSidePanel(message) {
@@ -743,16 +793,16 @@ function broadcastToSidePanel(message) {
 
 // Send a message to the content script running on Lovable
 function sendToLovableTab(message) {
-  console.log('[FLB SW] sendToLovableTab called. lovableTabId:', lovableTabId, 'message type:', message.type);
+  console.log('[FLB SW] sendToLovableTab called. lovableTabId:', state.lovableTabId, 'message type:', message.type);
 
-  if (lovableTabId !== null) {
-    console.log('[FLB SW] Using cached tab ID:', lovableTabId);
-    chrome.tabs.sendMessage(lovableTabId, message)
-      .then(() => console.log('[FLB SW] Message delivered to tab', lovableTabId))
+  if (state.lovableTabId !== null) {
+    console.log('[FLB SW] Using cached tab ID:', state.lovableTabId);
+    chrome.tabs.sendMessage(state.lovableTabId, message)
+      .then(() => console.log('[FLB SW] Message delivered to tab', state.lovableTabId))
       .catch(err => {
-        console.error('[FLB SW] Could not reach content script on cached tab:', lovableTabId, err.message);
+        console.error('[FLB SW] Could not reach content script on cached tab:', state.lovableTabId, err.message);
         // Cached tab may be stale — clear it and retry via query
-        lovableTabId = null;
+        state.lovableTabId = null;
         console.log('[FLB SW] Clearing stale tab ID, retrying via query…');
         sendToLovableTab(message);
       });
@@ -780,7 +830,7 @@ function sendToLovableTab(message) {
     const bestTab = activeTab || projectTab || dashboardTab || pool[0];
     console.log('[FLB SW] Selected tab:', bestTab.id, bestTab.url);
 
-    lovableTabId = bestTab.id;
+    state.lovableTabId = bestTab.id;
 
     // Try to send; if it fails, try each remaining tab
     tryTabsInOrder([bestTab, ...tabs.filter(t => t.id !== bestTab.id)], message);
@@ -827,7 +877,7 @@ function tryTabsInOrder(tabs, message, alreadyInjected = false) {
         setTimeout(() => {
           console.log('[FLB SW] Retrying after auto-injection…');
           tryTabsInOrder(allTabs, message, true);
-        }, 300);
+        }, AUTO_INJECT_DELAY_MS);
       });
     });
     return;
@@ -837,7 +887,7 @@ function tryTabsInOrder(tabs, message, alreadyInjected = false) {
   chrome.tabs.sendMessage(tab.id, message)
     .then(() => {
       console.log('[FLB SW] Message delivered to tab', tab.id, tab.url);
-      lovableTabId = tab.id; // Cache the working tab
+      state.lovableTabId = tab.id; // Cache the working tab
       readyTabs.add(tab.id);
     })
     .catch(err => {

@@ -3,6 +3,15 @@
 // Or use: ./generate-config.sh (reads from .env automatically)
 //
 // WARNING: config.js is gitignored. Never commit your real keys.
+//
+// SECURITY NOTE — Personal-use extension only
+// API keys in config.js are accessible via Chrome DevTools (Inspect → Sources).
+// This is inherent to Chrome extensions without a backend proxy server.
+// - Never share your extension folder or load it on shared/public machines
+// - If you suspect key exposure, rotate immediately:
+//     Anthropic: https://console.anthropic.com/settings/keys
+//     Anam.ai:   https://lab.anam.ai/
+// - For team/production use, route API calls through a server-side proxy
 
 const CONFIG = {
   // Anam.ai — Get from https://lab.anam.ai/

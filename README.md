@@ -223,13 +223,37 @@ curl https://api.anam.ai/v1/voices -H "Authorization: Bearer YOUR_ANAM_API_KEY"
 
 ## 🔒 Security
 
-- `config.js` and `.env` are **gitignored** — your API keys are never committed
-- The Anam SDK is **bundled locally** (`sidepanel/anam-sdk.js`) — no remote script loading (required by Chrome MV3 CSP)
-- Claude API calls use the `anthropic-dangerous-direct-browser-access` header — acceptable for personal use
+### API Keys & Secrets
 
-**For production / team use:**
-- Proxy Anthropic API calls through your own backend
+- `config.js` and `.env` are **gitignored** — your API keys are never committed
+- API keys in `config.js` are readable via Chrome DevTools (`Inspect → Sources`) — this is inherent to client-side Chrome extensions without a backend proxy
+- **Never share your extension folder** or load it on a shared/public machine
+- If you suspect key exposure, rotate immediately:
+  - Anthropic: [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+  - Anam.ai: [lab.anam.ai](https://lab.anam.ai/)
+
+### Input & Cost Protection
+
+- All user input is **truncated** to `MAX_SPEECH_LENGTH` (default 500 chars) before reaching the Claude API
+- **Dual rate limiting**: 2-second per-call cooldown + 15 calls/minute cap prevents runaway API costs
+- Raw API error messages are **never surfaced** to the UI — only generic user-facing messages are shown
+
+### XSS Prevention
+
+- The side panel chat uses **DOM API** (`createElement` / `textContent`) exclusively — no `innerHTML`
+- All user-generated content is inserted via `textContent`, which is structurally immune to script injection
+
+### Extension Security Model
+
+- The Anam SDK is **bundled locally** (`sidepanel/anam-sdk.js`) — no remote script loading (required by Chrome MV3 CSP)
+- Claude API calls use the `anthropic-dangerous-direct-browser-access` header — this is documented and acceptable for single-user personal use
+- Content script selectors are **scoped to `lovable.dev`** only (declared in `manifest.json`)
+
+### For Production / Team Use
+
+- Proxy Anthropic API calls through your own backend server
 - Generate Anam session tokens server-side
+- Add server-side rate limiting and authentication
 
 ---
 

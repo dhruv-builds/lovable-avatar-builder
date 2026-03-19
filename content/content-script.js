@@ -6,11 +6,33 @@
 console.log('[FLB] Facetime Lovable Builder content script loaded');
 
 // Announce to service worker that this tab has an active content script
-chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY', url: window.location.href })
-  .catch(() => { /* Extension context may not be ready yet — harmless */ });
+try {
+  chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY', url: window.location.href })
+    .catch(() => { /* Extension context may not be ready yet — harmless */ });
+} catch (e) {
+  console.warn('[FLB] Could not announce to service worker:', e.message);
+}
+
+// ─── Timing Constants ────────────────────────────────────────────────────────
+// Timing chain (see also service-worker.js timing diagram):
+//   Observer fires → [RESPONSE_DEBOUNCE_MS] → extract response
+//   Inject prompt → [ECHO_SUPPRESSION_MS] → observer re-enabled
+//   Trigger send → [SEND_RETRY_DELAY_MS] between retries, up to MAX_SEND_ATTEMPTS
+//   Build state → [BUILD_POLL_INTERVAL_MS] polling frequency
+//   Stop confirm → [STOP_CONFIRM_POLL_MS] polling for confirm dialog
+
+const RESPONSE_DEBOUNCE_MS = 1500;   // Wait for Lovable to finish streaming
+const ECHO_SUPPRESSION_MS = 5000;    // Suppress observer after prompt injection
+const SEND_RETRY_DELAY_MS = 300;     // Delay between send-button retries
+const MAX_SEND_ATTEMPTS = 5;         // Max retries for send button
+const TRIGGER_SEND_DELAY_MS = 500;   // Delay after injection before first send attempt
+const BUILD_POLL_INTERVAL_MS = 500;  // Build state polling frequency
+const STOP_CONFIRM_POLL_MS = 200;    // Polling for stop confirmation dialog
+const STOP_CONFIRM_MAX_ATTEMPTS = 10;
 
 // ─── Selectors ────────────────────────────────────────────────────────────────
 // These are tried in order. The first match wins.
+// Last verified: 2026-03-19 (Build 9)
 // UPDATE these after manually inspecting Lovable's DOM in DevTools.
 
 const SELECTORS = {
@@ -61,6 +83,11 @@ const SELECTORS = {
     '[class*="MessageList"]',
     'main [class*="overflow"]',
     'main [class*="scroll"]'
+  ],
+  stopButton: [
+    'button[aria-label*="Stop"]',
+    'button[aria-label*="stop"]',
+    'button[title*="Stop"]'
   ]
 };
 
@@ -124,9 +151,7 @@ function detectBuildState() {
   }
 
   // Also check for the stop button — if it's visible, Lovable is building
-  const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
-                  document.querySelector('button[aria-label*="stop"]') ||
-                  document.querySelector('button[title*="Stop"]');
+  const stopBtn = findElement(SELECTORS.stopButton);
   if (stopBtn) {
     isBuilding = true;
     if (!detail) detail = 'Building…';
@@ -187,27 +212,29 @@ function detectBuildState() {
 function startBuildStatePolling() {
   // Poll every 500ms to detect build state changes
   if (buildCheckInterval) return;
-  buildCheckInterval = setInterval(detectBuildState, 500);
+  buildCheckInterval = setInterval(detectBuildState, BUILD_POLL_INTERVAL_MS);
 }
 
 // ─── Prompt Injection ─────────────────────────────────────────────────────────
 
 function injectPrompt(text) {
-  // Diagnostic: log which selectors match on this page
   const pageContext = window.location.pathname.includes('/projects/') ? 'project' : 'homepage';
-  console.log('[FLB] Injecting prompt on:', pageContext, window.location.pathname);
-  SELECTORS.chatInput.forEach(sel => {
-    try {
-      const el = document.querySelector(sel);
-      if (el) console.log('[FLB] ✓ Input matched:', sel, '→', el.tagName, el);
-    } catch {}
-  });
-  SELECTORS.sendButton.forEach(sel => {
-    try {
-      const el = document.querySelector(sel);
-      if (el) console.log('[FLB] ✓ Button matched:', sel, '→', el.tagName, el);
-    } catch {}
-  });
+  // Diagnostic: log which selectors match on this page (debug only)
+  if (typeof CONFIG !== 'undefined' && CONFIG.DEBUG_LOG) {
+    console.log('[FLB] Injecting prompt on:', pageContext, window.location.pathname);
+    SELECTORS.chatInput.forEach(sel => {
+      try {
+        const el = document.querySelector(sel);
+        if (el) console.log('[FLB] ✓ Input matched:', sel, '→', el.tagName, el);
+      } catch {}
+    });
+    SELECTORS.sendButton.forEach(sel => {
+      try {
+        const el = document.querySelector(sel);
+        if (el) console.log('[FLB] ✓ Button matched:', sel, '→', el.tagName, el);
+      } catch {}
+    });
+  }
 
   const input = findElement(SELECTORS.chatInput);
 
@@ -298,15 +325,14 @@ function injectPrompt(text) {
   setTimeout(() => {
     suppressObserver = false;
     console.log('[FLB] Observer suppression window ended');
-  }, 5000);
+  }, ECHO_SUPPRESSION_MS);
 
   // Delay to let React process injected text before attempting send
-  setTimeout(triggerSend, 500);
+  setTimeout(triggerSend, TRIGGER_SEND_DELAY_MS);
   return true;
 }
 
 function triggerSend(attempt = 0) {
-  const maxAttempts = 5;
   const sendBtn = findElement(SELECTORS.sendButton);
 
   // If button found and enabled, click it
@@ -317,14 +343,14 @@ function triggerSend(attempt = 0) {
   }
 
   // If we haven't exhausted retries, wait and try again (button may still be disabled)
-  if (attempt < maxAttempts) {
-    console.log('[FLB Content] Send button not ready, retrying (' + (attempt + 1) + '/' + maxAttempts + ')');
-    setTimeout(() => triggerSend(attempt + 1), 300);
+  if (attempt < MAX_SEND_ATTEMPTS) {
+    console.log('[FLB Content] Send button not ready, retrying (' + (attempt + 1) + '/' + MAX_SEND_ATTEMPTS + ')');
+    setTimeout(() => triggerSend(attempt + 1), SEND_RETRY_DELAY_MS);
     return;
   }
 
   // Final fallback: dispatch Enter key on the input
-  console.log('[FLB Content] Fallback: dispatching Enter key after ' + maxAttempts + ' attempts');
+  console.log('[FLB Content] Fallback: dispatching Enter key after ' + MAX_SEND_ATTEMPTS + ' attempts');
   const input = findElement(SELECTORS.chatInput);
   if (input) {
     input.focus();
@@ -349,31 +375,28 @@ function triggerSend(attempt = 0) {
 
 let lastMessageHash = '';
 let debounceTimer = null;
-const DEBOUNCE_MS = 1500; // Wait for Lovable to finish streaming before extracting
 
 function initializeObserver() {
   // Lovable is a SPA — the chat container may not exist until a project loads.
   // Poll until it appears.
+  let pollAttempts = 0;
+  const MAX_POLL_ATTEMPTS = 60; // Give up after 60s
   const pollInterval = setInterval(() => {
+    pollAttempts++;
     const container = findChatContainer();
     if (container) {
       clearInterval(pollInterval);
       startObserving(container);
       console.log('[FLB] MutationObserver attached to Lovable chat container');
+    } else if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+      clearInterval(pollInterval);
+      console.warn('[FLB] Chat container not found after', MAX_POLL_ATTEMPTS, 'attempts — observer not started');
     }
   }, 1000);
 }
 
 function findChatContainer() {
-  for (const selector of SELECTORS.chatMessages) {
-    try {
-      const el = document.querySelector(selector);
-      if (el) return el;
-    } catch {
-      // Skip invalid selector
-    }
-  }
-  return null;
+  return findElement(SELECTORS.chatMessages);
 }
 
 function startObserving(container) {
@@ -385,7 +408,7 @@ function startObserving(container) {
     // Debounce: reset timer on every mutation.
     // Lovable streams its response — we wait until it settles.
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => extractLatestResponse(container), DEBOUNCE_MS);
+    debounceTimer = setTimeout(() => extractLatestResponse(container), RESPONSE_DEBOUNCE_MS);
   });
 
   observer.observe(container, {
@@ -403,7 +426,7 @@ function startObserving(container) {
       initializeObserver();
     }
   });
-  parentObserver.observe(document.body, { childList: true, subtree: true });
+  parentObserver.observe(container.parentNode || document.body, { childList: true, subtree: true });
 }
 
 function extractLatestResponse(container) {
@@ -567,9 +590,7 @@ function findStopConfirmButton() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CLICK_STOP') {
-    const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
-                    document.querySelector('button[aria-label*="stop"]') ||
-                    document.querySelector('button[title*="Stop"]');
+    const stopBtn = findElement(SELECTORS.stopButton);
     if (stopBtn) {
       stopBtn.click();
       console.log('[FLB] Stop button clicked');
@@ -585,8 +606,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           clearInterval(confirmInterval);
           console.log('[FLB] Stop confirmation dialog auto-confirmed');
         }
-        if (confirmAttempts >= 10) clearInterval(confirmInterval);
-      }, 200);
+        if (confirmAttempts >= STOP_CONFIRM_MAX_ATTEMPTS) clearInterval(confirmInterval);
+      }, STOP_CONFIRM_POLL_MS);
 
       chrome.runtime.sendMessage({ type: 'STOP_RESULT', success: true });
     } else {
@@ -612,7 +633,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// ─── Selector Health ─────────────────────────────────────────────────────────
+
+/** Log which selectors match on the current page for diagnostic visibility. */
+function reportSelectorHealth() {
+  const pageContext = window.location.pathname.includes('/projects/') ? 'project' : 'homepage';
+  console.log('[FLB] Selector health check on', pageContext, 'page:');
+  for (const [group, selectors] of Object.entries(SELECTORS)) {
+    const matches = selectors.filter(sel => {
+      try { return document.querySelector(sel) !== null; } catch { return false; }
+    });
+    console.log(`[FLB]   ${group}: ${matches.length}/${selectors.length} matched`,
+      matches.length > 0 ? matches : '(none)');
+  }
+}
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 initializeObserver();
 startBuildStatePolling();
+// Run selector health check after DOM settles
+setTimeout(reportSelectorHealth, 2000);
