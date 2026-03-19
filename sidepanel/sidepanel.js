@@ -9,6 +9,7 @@ var AnamAI = window.anam;
 // ─── State ────────────────────────────────────────────────────────────────────
 
 let anamClient = null;
+let isListening = true; // Voice capture toggle — pausing suppresses speech, text still works
 
 // ─── Anam SDK Initialization ──────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ async function initializeAnam() {
     anamClient.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
       // Fires when user finishes speaking — messages array has full history
       const last = messages[messages.length - 1];
-      if (last && last.role === 'user') {
+      if (last && last.role === 'user' && isListening) {
         handleUserSpeech(last.content);
       }
     });
@@ -172,7 +173,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'PROMPT_SENT':
       debugLog('← PROMPT_SENT', message.prompt);
-      addChatMessage('system', 'Sent to Lovable: ' + message.prompt);
+      addChatMessage('system', '→ Sent to Lovable: ' + message.prompt);
       updateStatus('building', 'Prompt sent — Lovable is building…');
       break;
 
@@ -184,6 +185,11 @@ chrome.runtime.onMessage.addListener((message) => {
         const detail = message.detail || 'Lovable is working…';
         updateStatus('building', detail);
       }
+      break;
+
+    case 'LOVABLE_RAW_RESPONSE':
+      debugLog('← LOVABLE_RAW_RESPONSE', message.text);
+      addChatMessage('lovable', message.text);
       break;
 
     case 'INJECTION_ERROR':
@@ -203,6 +209,36 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   if (chat) chat.innerHTML = '';
   addChatMessage('system', 'Conversation reset — ready');
   updateStatus('listening', 'Conversation reset — ready');
+});
+
+// ─── Listen Toggle ───────────────────────────────────────────────────────────
+
+document.getElementById('btn-listen-toggle').addEventListener('click', toggleListening);
+
+function toggleListening() {
+  isListening = !isListening;
+  const btn = document.getElementById('btn-listen-toggle');
+  if (isListening) {
+    btn.textContent = '\u{1F399} Listening';
+    btn.classList.remove('paused');
+    btn.classList.add('listening');
+    btn.title = 'Pause listening (Space)';
+    updateStatus('listening', 'Listening \u2014 speak to build');
+  } else {
+    btn.textContent = '\u{23F8} Paused';
+    btn.classList.remove('listening');
+    btn.classList.add('paused');
+    btn.title = 'Resume listening (Space)';
+    updateStatus('idle', 'Paused \u2014 press Space or click to resume');
+  }
+}
+
+// Space hotkey — toggle listening (only when text input is not focused)
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && document.activeElement !== document.getElementById('text-input')) {
+    e.preventDefault();
+    toggleListening();
+  }
 });
 
 // ─── Manual Text Input ────────────────────────────────────────────────────────
@@ -254,8 +290,9 @@ function addChatMessage(role, text) {
   const msg = document.createElement('div');
   msg.className = `chat-msg ${role}`;
 
-  // Label for assistant messages
-  const labelText = role === 'assistant' ? 'Avatar' : role === 'user' ? 'You' : '';
+  // Label for each message role
+  const labelMap = { assistant: 'Avatar', user: 'You', lovable: 'Lovable' };
+  const labelText = labelMap[role] || '';
 
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 

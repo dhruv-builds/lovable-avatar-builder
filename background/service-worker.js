@@ -9,9 +9,11 @@ importScripts('../config.js');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a Lovable.dev prompt engineer. Your job is to take casual spoken
-instructions from a user and reformulate them into clear, specific prompts optimized for
-Lovable's AI builder.
+const SYSTEM_PROMPT = `You are a Lovable.dev prompt engineer and conversational building assistant. Your job is to
+take casual spoken instructions from a user and reformulate them into clear, specific prompts
+optimized for Lovable's AI builder. You also help the user think through their ideas mid-build.
+
+Each user message includes a [BUILD_STATE] tag telling you whether Lovable is currently building or idle.
 
 Rules:
 1. Convert casual speech into structured, specific Lovable prompts
@@ -27,13 +29,45 @@ Rules:
 7. If the user is responding to a Lovable message, formulate the response as a direct answer
 8. Never include markdown formatting — plain text only
 9. For iterative changes, be specific about what component/section to modify
-10. If the user wants to stop or cancel the current Lovable build (e.g. "stop", "cancel that",
-    "never mind", "hold on"), respond ONLY with: [STOP]: <brief description of what was cancelled>
+
+MID-BUILD BEHAVIOR — When [BUILD_STATE] says Lovable is currently building:
+Determine the user's intent and respond with the appropriate prefix:
+
+A) DEFINITE COURSE CORRECTION — The user is clearly changing direction mid-build.
+   Indicators: "actually", "wait", "change it to", "no, make it", "instead", decisive/imperative tone.
+   → Respond with: [CORRECT]: <spoken preamble to user> ||| <full corrected Lovable prompt>
+   The preamble should briefly explain what you are doing (e.g. "Got it, I am stopping the current
+   build and updating the instructions to use a black and white color scheme.").
+   The prompt after ||| should be the complete corrected instruction for Lovable, incorporating
+   both the original intent and the correction.
+
+B) TENTATIVE / EXPLORATORY — The user is thinking out loud or asking for your opinion.
+   Indicators: "maybe", "what do you think", "would it be better", "I was thinking", questioning tone.
+   → Respond with: [DISCUSS]: <your expert opinion, what Lovable is currently doing, and ask the user what they want to do>
+   Be conversational. Give a real opinion based on your expertise. Mention what Lovable is working on.
+   End by asking whether to stop and change course or keep the current build going.
+
+C) NEW UNRELATED INSTRUCTION — The user wants something done after the current build finishes.
+   → Respond with: [QUEUE]: <spoken acknowledgment> ||| <reformulated Lovable prompt>
+   The acknowledgment should confirm you will queue this for after the build finishes.
+
+D) STOP — The user wants to halt with no replacement.
+   → Respond with: [STOP]: <brief description of what was cancelled>
+
+WHEN IDLE (not building):
+Use the standard prefixes: [PROMPT]:, [CLARIFY]:, or [STOP]:.
+
+CONFIRMATION HANDLING:
+When the user says "yes", "do it", "go ahead", "sure", "let's do that" in response to a
+[DISCUSS]: message, respond with: [CONFIRM]: <the action prompt to execute>
+When the user says "no", "keep going", "never mind", "nah", respond with:
+[DISMISS]: <brief spoken acknowledgment that you are keeping the current build going>
 
 You receive the full conversation history including what Lovable has said back. Use this
 context to understand where the user is in their build process.
 
-Output ONLY the prefixed prompt or clarification. No preamble, no explanation.`;
+Output ONLY the prefixed response. No preamble, no explanation. Keep spoken text natural and
+conversational — this will be read aloud by an avatar.`;
 
 const SUMMARIZE_PROMPT = `You clean up raw text captured from the Lovable.dev UI. The text may contain:
 - Echoed user prompts that were injected into Lovable
@@ -72,6 +106,13 @@ let lovableBuildDetail = '';
 
 // Auto-retry guard — at most one automatic retry per user prompt cycle
 let autoRetryUsed = false;
+
+// Track the last prompt sent to Lovable (for build-state context)
+let lastSentPrompt = '';
+
+// Confirmation state machine — for tentative/exploratory mid-build speech
+let pendingAction = null;      // { type: 'correct'|'queue', prompt: '...' }
+let awaitingConfirmation = false;
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
@@ -120,7 +161,12 @@ async function reformulateWithClaude(userSpeech) {
       return { role: 'user', content: `[Lovable responded]: ${entry.text}` };
     }
   });
-  rawMessages.push({ role: 'user', content: userSpeech });
+  // Inject build-state context so Claude knows whether Lovable is currently working
+  const buildContext = lovableBuildState === 'building'
+    ? `[BUILD_STATE: Lovable is currently building.${lastSentPrompt ? ` Last prompt sent: "${lastSentPrompt}"` : ''}${lovableBuildDetail ? ` Status: ${lovableBuildDetail}` : ''}]`
+    : '[BUILD_STATE: Lovable is idle and ready for a new prompt.]';
+
+  rawMessages.push({ role: 'user', content: `${buildContext}\n\n${userSpeech}` });
 
   // Merge consecutive messages with the same role (API requires alternation)
   const messages = [];
@@ -142,7 +188,7 @@ async function reformulateWithClaude(userSpeech) {
     },
     body: JSON.stringify({
       model: CONFIG.ANTHROPIC_MODEL,
-      max_tokens: 300,
+      max_tokens: 500,
       system: SYSTEM_PROMPT,
       messages: messages
     })
@@ -225,19 +271,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'USER_SPEECH': {
       const userText = message.text;
 
-      // Allow stop commands even while building
+      // Allow stop commands even while building (fast-path, no Claude call needed)
       const isStopCommand = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i.test(userText.trim());
 
-      // Block new prompts while Lovable is building (but not stop commands)
-      if (lovableBuildState === 'building' && !isStopCommand) {
-        console.log('[FLB SW] Blocked prompt — Lovable is building:', lovableBuildDetail);
-        broadcastToSidePanel({
-          type: 'CLARIFICATION',
-          text: `Lovable is still building${lovableBuildDetail ? ' (' + lovableBuildDetail + ')' : ''}. I'll let you know when it's done, then you can give your next instruction.`
-        });
-        sendResponse({ received: true, blocked: true });
-        return true;
-      }
+      // Mid-build speech is now routed through Claude instead of blocked.
+      // Claude will determine intent: course correction, discussion, queue, or stop.
 
       // Rate limiting — prevent rapid-fire API calls
       const now = Date.now();
@@ -262,9 +300,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true; // Keep channel open for async
     }
 
-    // ── Lovable posted a new response → summarize then forward to side panel ──
+    // ── Lovable posted a new response → show raw, then summarize for avatar ──
     case 'LOVABLE_RESPONSE': {
       addToHistory('lovable', message.text);
+
+      // Show raw Lovable response in side panel immediately (blue bubble)
+      broadcastToSidePanel({ type: 'LOVABLE_RAW_RESPONSE', text: message.text });
 
       // Find the last prompt we sent for echo context
       const lastPrompt = conversationHistory.slice().reverse()
@@ -304,12 +345,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         detail: message.detail || ''
       });
 
-      // If build just finished, send a ready notification
+      // If build just finished, check for queued prompts or send ready notification
       if (prevState === 'building' && message.status === 'idle') {
-        broadcastToSidePanel({
-          type: 'CLARIFICATION',
-          text: 'Lovable finished building. Ready for your next instruction.'
-        });
+        if (pendingAction && pendingAction.type === 'queue') {
+          // Auto-inject the queued prompt
+          const queuedPrompt = pendingAction.prompt;
+          pendingAction = null;
+          awaitingConfirmation = false;
+          console.log('[FLB SW] Build finished — injecting queued prompt:', queuedPrompt);
+          lastSentPrompt = queuedPrompt;
+          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Lovable finished. Now sending your queued instruction.' });
+          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: queuedPrompt });
+          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: queuedPrompt });
+          addToHistory('claude', `[PROMPT]: ${queuedPrompt}`);
+        } else {
+          broadcastToSidePanel({
+            type: 'CLARIFICATION',
+            text: 'Lovable finished building. Ready for your next instruction.'
+          });
+        }
       }
 
       sendResponse({ received: true });
@@ -360,10 +414,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Stop result from content script ────────────────────────────────────────
     case 'STOP_RESULT': {
-      const feedback = message.success
-        ? 'Lovable has been stopped.'
-        : "I tried to stop Lovable but couldn't find the stop button. It may have already finished.";
-      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: feedback });
+      // If there's a pending correction prompt, inject it after stop
+      if (pendingAction && pendingAction.type === 'correct') {
+        const correctedPrompt = pendingAction.prompt;
+        pendingAction = null;
+        awaitingConfirmation = false;
+
+        if (message.success) {
+          // Wait briefly for Lovable to settle, then inject corrected prompt
+          setTimeout(() => {
+            lastSentPrompt = correctedPrompt;
+            broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: correctedPrompt });
+            sendToLovableTab({ type: 'INJECT_PROMPT', prompt: correctedPrompt });
+            addToHistory('claude', `[PROMPT]: ${correctedPrompt}`);
+          }, 800);
+        } else {
+          // Stop button not found — build may have finished, inject anyway
+          lastSentPrompt = correctedPrompt;
+          broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: correctedPrompt });
+          sendToLovableTab({ type: 'INJECT_PROMPT', prompt: correctedPrompt });
+          addToHistory('claude', `[PROMPT]: ${correctedPrompt}`);
+        }
+      } else {
+        // Plain stop — no follow-up prompt
+        const feedback = message.success
+          ? 'Lovable has been stopped.'
+          : "I tried to stop Lovable but couldn't find the stop button. It may have already finished.";
+        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: feedback });
+      }
       sendResponse({ received: true });
       return true;
     }
@@ -372,6 +450,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'RESET_CONVERSATION': {
       conversationHistory = [];
       persistHistory();
+      lastSentPrompt = '';
+      pendingAction = null;
+      awaitingConfirmation = false;
       sendResponse({ received: true });
       return true;
     }
@@ -389,9 +470,67 @@ function processUserSpeech(userText) {
   if (stopPattern.test(userText.trim())) {
     addToHistory('user', userText);
     addToHistory('claude', '[STOP]: User requested stop');
+    pendingAction = null;
+    awaitingConfirmation = false;
     broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Stopping Lovable now.' });
     sendToLovableTab({ type: 'CLICK_STOP' });
     return;
+  }
+
+  // Confirmation state machine — check if user is responding to a [DISCUSS]: message
+  if (awaitingConfirmation) {
+    const confirmPattern = /^(yes|yeah|yep|do it|go ahead|sure|let's do that|let's do it|ok|okay|go for it|absolutely|please)$/i;
+    const dismissPattern = /^(no|nah|nope|keep going|never mind|nevermind|cancel|forget it|don't|leave it)$/i;
+
+    if (confirmPattern.test(userText.trim())) {
+      addToHistory('user', userText);
+      if (pendingAction && pendingAction.prompt) {
+        // We already have the prompt — execute directly
+        console.log('[FLB SW] User confirmed pending action:', pendingAction.type);
+        if (pendingAction.type === 'correct') {
+          addToHistory('claude', `[CONFIRM]: ${pendingAction.prompt}`);
+          stopAndCorrect(pendingAction.prompt, 'Alright, stopping the build and applying the change now.');
+        } else if (pendingAction.type === 'queue') {
+          addToHistory('claude', `[CONFIRM]: Queued — ${pendingAction.prompt}`);
+          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: "Got it, I'll send that once the current build finishes." });
+          // pendingAction stays as queue — will be auto-injected on idle transition
+        }
+        awaitingConfirmation = false;
+      } else {
+        // No prompt stored yet — route through Claude to generate the action prompt
+        awaitingConfirmation = false;
+        pendingAction = null;
+        reformulateWithClaude(userText)
+          .then(claudeResponse => {
+            addToHistory('claude', claudeResponse);
+            if (claudeResponse.startsWith('[CONFIRM]:')) {
+              const prompt = claudeResponse.replace('[CONFIRM]:', '').trim();
+              stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
+            } else if (claudeResponse.startsWith('[PROMPT]:')) {
+              const prompt = claudeResponse.replace('[PROMPT]:', '').trim();
+              lastSentPrompt = prompt;
+              stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
+            }
+          })
+          .catch(err => {
+            console.error('[FLB SW] Claude API error on confirm:', err);
+          });
+      }
+      return;
+    }
+
+    if (dismissPattern.test(userText.trim())) {
+      addToHistory('user', userText);
+      addToHistory('claude', '[DISMISS]: User chose to keep current build');
+      pendingAction = null;
+      awaitingConfirmation = false;
+      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Alright, keeping the current build going.' });
+      return;
+    }
+
+    // Not a simple yes/no — clear confirmation state and route through Claude normally
+    pendingAction = null;
+    awaitingConfirmation = false;
   }
 
   addToHistory('user', userText);
@@ -401,17 +540,63 @@ function processUserSpeech(userText) {
       // Store Claude's response in history for proper multi-turn context
       addToHistory('claude', claudeResponse);
 
+      // ── [STOP]: Halt with no replacement ──
       if (claudeResponse.startsWith('[STOP]:')) {
         broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Stopping Lovable now.' });
         sendToLovableTab({ type: 'CLICK_STOP' });
+
+      // ── [CORRECT]: Definite course correction — stop + re-prompt ──
+      } else if (claudeResponse.startsWith('[CORRECT]:')) {
+        const body = claudeResponse.replace('[CORRECT]:', '').trim();
+        const parts = body.split('|||');
+        const spokenPreamble = parts[0].trim();
+        const correctedPrompt = (parts[1] || parts[0]).trim();
+        stopAndCorrect(correctedPrompt, spokenPreamble);
+
+      // ── [DISCUSS]: Tentative/exploratory — speak opinion, wait for confirmation ──
+      } else if (claudeResponse.startsWith('[DISCUSS]:')) {
+        const discussion = claudeResponse.replace('[DISCUSS]:', '').trim();
+        broadcastToSidePanel({ type: 'CLARIFICATION', text: discussion });
+        // Store a pending correction action in case user confirms
+        // Claude's next response will be [CONFIRM]: with the actual prompt
+        pendingAction = { type: 'correct', prompt: '' }; // prompt will come from [CONFIRM]:
+        awaitingConfirmation = true;
+
+      // ── [QUEUE]: New instruction for after current build finishes ──
+      } else if (claudeResponse.startsWith('[QUEUE]:')) {
+        const body = claudeResponse.replace('[QUEUE]:', '').trim();
+        const parts = body.split('|||');
+        const spokenAck = parts[0].trim();
+        const queuedPrompt = (parts[1] || parts[0]).trim();
+        pendingAction = { type: 'queue', prompt: queuedPrompt };
+        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenAck });
+
+      // ── [CONFIRM]: User confirmed a discussed action ──
+      } else if (claudeResponse.startsWith('[CONFIRM]:')) {
+        const prompt = claudeResponse.replace('[CONFIRM]:', '').trim();
+        pendingAction = { type: 'correct', prompt };
+        awaitingConfirmation = false;
+        stopAndCorrect(prompt, 'Alright, stopping the build and applying your change now.');
+
+      // ── [DISMISS]: User declined a discussed action ──
+      } else if (claudeResponse.startsWith('[DISMISS]:')) {
+        const ack = claudeResponse.replace('[DISMISS]:', '').trim();
+        pendingAction = null;
+        awaitingConfirmation = false;
+        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: ack });
+
+      // ── [CLARIFY]: Standard clarification question ──
       } else if (claudeResponse.startsWith('[CLARIFY]:')) {
         const question = claudeResponse.replace('[CLARIFY]:', '').trim();
         broadcastToSidePanel({ type: 'CLARIFICATION', text: question });
+
+      // ── [PROMPT]: Standard prompt (or fallback) ──
       } else {
         const prompt = claudeResponse.startsWith('[PROMPT]:')
           ? claudeResponse.replace('[PROMPT]:', '').trim()
           : claudeResponse.trim();
 
+        lastSentPrompt = prompt;
         broadcastToSidePanel({ type: 'PROMPT_SENT', prompt });
         sendToLovableTab({ type: 'INJECT_PROMPT', prompt });
       }
@@ -423,6 +608,22 @@ function processUserSpeech(userText) {
         text: "Sorry, I couldn't connect to Claude. Please check your API key in config.js."
       });
     });
+}
+
+// ─── Stop and Correct ────────────────────────────────────────────────────────
+
+function stopAndCorrect(correctedPrompt, spokenPreamble) {
+  console.log('[FLB SW] stopAndCorrect — preamble:', spokenPreamble, 'prompt:', correctedPrompt);
+
+  // Tell the user what's happening via avatar
+  broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: spokenPreamble });
+
+  // Store the corrected prompt so STOP_RESULT handler can inject it
+  pendingAction = { type: 'correct', prompt: correctedPrompt };
+
+  // Send stop command to content script
+  sendToLovableTab({ type: 'CLICK_STOP' });
+  // The STOP_RESULT handler will inject the corrected prompt after stop succeeds
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
