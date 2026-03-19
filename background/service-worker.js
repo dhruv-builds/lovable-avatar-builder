@@ -509,13 +509,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         awaitingConfirmation = false;
 
         if (message.success) {
-          // Wait briefly for Lovable to settle, then inject corrected prompt
+          // Wait for Lovable UI to reset after stop, then inject corrected prompt
           setTimeout(() => {
             lastSentPrompt = correctedPrompt;
             broadcastToSidePanel({ type: 'PROMPT_SENT', prompt: correctedPrompt });
             sendToLovableTab({ type: 'INJECT_PROMPT', prompt: correctedPrompt });
             addToHistory('claude', `[PROMPT]: ${correctedPrompt}`);
-          }, 800);
+          }, 1500);
         } else {
           // Stop button not found — build may have finished, inject anyway
           lastSentPrompt = correctedPrompt;

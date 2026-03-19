@@ -300,21 +300,34 @@ function injectPrompt(text) {
     console.log('[FLB] Observer suppression window ended');
   }, 5000);
 
-  // Brief delay to let React update before we click Send
-  setTimeout(triggerSend, 200);
+  // Delay to let React process injected text before attempting send
+  setTimeout(triggerSend, 500);
   return true;
 }
 
-function triggerSend() {
+function triggerSend(attempt = 0) {
+  const maxAttempts = 5;
   const sendBtn = findElement(SELECTORS.sendButton);
+
+  // If button found and enabled, click it
   if (sendBtn && !sendBtn.disabled) {
     sendBtn.click();
+    console.log('[FLB Content] Send button clicked (attempt ' + attempt + ')');
     return;
   }
 
-  // Fallback: dispatch Enter keydown on the input
+  // If we haven't exhausted retries, wait and try again (button may still be disabled)
+  if (attempt < maxAttempts) {
+    console.log('[FLB Content] Send button not ready, retrying (' + (attempt + 1) + '/' + maxAttempts + ')');
+    setTimeout(() => triggerSend(attempt + 1), 300);
+    return;
+  }
+
+  // Final fallback: dispatch Enter key on the input
+  console.log('[FLB Content] Fallback: dispatching Enter key after ' + maxAttempts + ' attempts');
   const input = findElement(SELECTORS.chatInput);
   if (input) {
+    input.focus();
     input.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Enter',
       code: 'Enter',

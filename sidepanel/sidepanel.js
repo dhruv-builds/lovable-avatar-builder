@@ -10,6 +10,9 @@ var AnamAI = window.anam;
 
 let anamClient = null;
 let isListening = true; // Voice capture toggle — pausing suppresses speech, text still works
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+let heartbeatInterval = null;
 
 // ─── Anam SDK Initialization ──────────────────────────────────────────────────
 
@@ -87,14 +90,34 @@ async function initializeAnam() {
 
     anamClient.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
       console.log('[FLB Panel] Connection established');
+      reconnectAttempts = 0;
+      startHeartbeat();
       updateStatus('listening', 'Listening — speak to build');
       updateAvatarStateLabel('Live');
     });
 
     anamClient.addListener(AnamEvent.CONNECTION_CLOSED, () => {
       console.log('[FLB Panel] Connection closed');
-      updateStatus('idle', 'Disconnected');
-      updateAvatarStateLabel('Disconnected');
+      stopHeartbeat();
+
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        console.log(`[FLB Panel] Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`);
+        updateAvatarStateLabel(`Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`);
+        updateStatus('idle', 'Avatar reconnecting…');
+        setTimeout(() => {
+          initializeAnam().catch(err => {
+            console.warn('[FLB Panel] Reconnect failed:', err.message);
+            collapseAvatar('Connection lost');
+            updateStatus('listening', 'Avatar lost — text mode active');
+            addChatMessage('system', 'Avatar connection lost — using text mode');
+          });
+        }, 2000);
+      } else {
+        collapseAvatar('Connection lost');
+        updateStatus('listening', 'Avatar disconnected — text mode active');
+        addChatMessage('system', 'Avatar disconnected after retries — using text mode');
+      }
     });
 
     anamClient.addListener(AnamEvent.MIC_PERMISSION_GRANTED, () => {
@@ -117,6 +140,30 @@ async function initializeAnam() {
     const msg = err?.message || err?.toString() || 'Unknown error';
     updateStatus('error', 'Avatar failed: ' + msg);
     updateAvatarStateLabel('Error: ' + msg.slice(0, 40));
+  }
+}
+
+// ─── Heartbeat — Keep Anam Connection Alive ──────────────────────────────────
+
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatInterval = setInterval(() => {
+    if (!anamClient) return;
+    try {
+      // Send an empty talk message to keep the WebSocket/WebRTC alive
+      const stream = anamClient.createTalkMessageStream();
+      stream.streamMessageChunk(' ');
+      stream.endMessage();
+    } catch (e) {
+      console.warn('[FLB Panel] Heartbeat failed:', e.message);
+    }
+  }, 20000); // Every 20 seconds
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
   }
 }
 
@@ -229,17 +276,19 @@ function toggleListening() {
     btn.classList.add('listening');
     btn.title = 'Pause listening (Space)';
     updateStatus('listening', 'Listening \u2014 speak to build');
-    // Unmute mic at SDK level
+    // Unmute mic at SDK level and restart heartbeat
     try { if (anamClient) anamClient.unmuteInputAudio(); } catch (e) { /* SDK may not be ready */ }
+    startHeartbeat();
   } else {
     btn.textContent = '\u{23F8} Paused';
     btn.classList.remove('listening');
     btn.classList.add('paused');
     btn.title = 'Resume listening (Space)';
     updateStatus('idle', 'Paused \u2014 press Space or click to resume');
-    // Mute mic and stop any ongoing avatar speech
+    // Mute mic, stop any ongoing avatar speech, and pause heartbeat
     try { if (anamClient) anamClient.muteInputAudio(); } catch (e) { /* SDK may not be ready */ }
     try { if (anamClient) anamClient.interruptPersona(); } catch (e) { /* may not be streaming */ }
+    stopHeartbeat();
   }
 }
 
