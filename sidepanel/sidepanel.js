@@ -14,6 +14,17 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 3;
 let heartbeatInterval = null;
 
+// ─── Speech Queue State ─────────────────────────────────────────────────────
+// Messages queue up and play sequentially so Lovable updates never cut off
+// the avatar mid-sentence.
+const speechQueue = [];
+let isSpeaking = false;
+let currentTalkStream = null;
+let speechTimeoutId = null;
+const SPEECH_RATE_MS_PER_CHAR = 65;    // ~65ms per character TTS estimate
+const MIN_SPEECH_TIMEOUT_MS = 3000;     // Minimum fallback timeout
+const MAX_SPEECH_TIMEOUT_MS = 30000;    // Maximum fallback timeout
+
 // ─── Anam SDK Initialization ──────────────────────────────────────────────────
 
 async function initializeAnam() {
@@ -99,6 +110,7 @@ async function initializeAnam() {
     anamClient.addListener(AnamEvent.CONNECTION_CLOSED, () => {
       console.log('[FLB Panel] Connection closed');
       stopHeartbeat();
+      clearSpeechQueue();
 
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
@@ -132,6 +144,14 @@ async function initializeAnam() {
       updateAvatarStateLabel('Mic denied');
     });
 
+    // ── Speech queue: detect when avatar finishes speaking ──
+    anamClient.addListener(AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED, (event) => {
+      if (event.role === 'persona' && event.endOfSpeech) {
+        console.log('[FLB Panel] Persona finished speaking (SDK event)');
+        onSpeechComplete();
+      }
+    });
+
     updateStatus('idle', 'Avatar connected — waiting for mic…');
     updateAvatarStateLabel('Connecting mic…');
 
@@ -148,7 +168,7 @@ async function initializeAnam() {
 function startHeartbeat() {
   stopHeartbeat();
   heartbeatInterval = setInterval(() => {
-    if (!anamClient) return;
+    if (!anamClient || isSpeaking) return;
     try {
       // Send an empty talk message to keep the WebSocket/WebRTC alive
       const stream = anamClient.createTalkMessageStream();
@@ -177,6 +197,7 @@ function handleUserSpeech(text) {
   // Debounce rapid speech events (e.g. Anam SDK fires multiple times)
   clearTimeout(speechDebounceTimer);
   speechDebounceTimer = setTimeout(() => {
+    addChatMessage('user', text);
     console.log('[FLB Panel] User said:', text);
     debugLog('→ USER_SPEECH', text);
     updateStatus('processing', 'Thinking…');
@@ -188,19 +209,82 @@ function handleUserSpeech(text) {
   }, 500);
 }
 
-// ─── Avatar Speech Output ──────────────────────────────────────────────────────
+// ─── Avatar Speech Output (Queued) ────────────────────────────────────────────
 
-function speakThroughAvatar(text) {
-  if (!anamClient || !text || !isListening) return;
+/**
+ * Queue text for the avatar to speak. If the avatar is already speaking,
+ * the new text is appended to the last queued item so closely-spaced
+ * messages merge into one continuous utterance.
+ */
+function queueSpeech(text) {
+  if (!text || !isListening) return;
+
+  if (isSpeaking && speechQueue.length > 0) {
+    // Coalesce with the last queued item
+    speechQueue[speechQueue.length - 1] += ' ' + text;
+    console.log('[FLB Panel] Coalesced speech into queue item', speechQueue.length - 1);
+    return;
+  }
+
+  speechQueue.push(text);
+  if (!isSpeaking) processNextSpeech();
+}
+
+function processNextSpeech() {
+  if (speechQueue.length === 0) {
+    isSpeaking = false;
+    currentTalkStream = null;
+    return;
+  }
+
+  if (!anamClient) {
+    speechQueue.length = 0;
+    isSpeaking = false;
+    return;
+  }
+
+  isSpeaking = true;
+  const text = speechQueue.shift();
 
   try {
-    // SDK v4: use createTalkMessageStream for BYO-brain TTS
-    const talkStream = anamClient.createTalkMessageStream();
-    talkStream.streamMessageChunk(text);
-    talkStream.endMessage();
+    currentTalkStream = anamClient.createTalkMessageStream();
+    currentTalkStream.streamMessageChunk(text);
+    currentTalkStream.endMessage();
+    console.log('[FLB Panel] Speaking:', text.substring(0, 80) + (text.length > 80 ? '…' : ''));
+
+    // Fallback timeout in case SDK event doesn't fire
+    clearTimeout(speechTimeoutId);
+    const estimatedDuration = Math.max(
+      MIN_SPEECH_TIMEOUT_MS,
+      Math.min(text.length * SPEECH_RATE_MS_PER_CHAR, MAX_SPEECH_TIMEOUT_MS)
+    );
+    speechTimeoutId = setTimeout(() => {
+      console.log('[FLB Panel] Speech timeout fallback fired');
+      onSpeechComplete();
+    }, estimatedDuration);
   } catch (err) {
     console.error('[FLB Panel] speakThroughAvatar error:', err);
+    isSpeaking = false;
+    processNextSpeech();
   }
+}
+
+function onSpeechComplete() {
+  clearTimeout(speechTimeoutId);
+  isSpeaking = false;
+  currentTalkStream = null;
+
+  // Brief pause between consecutive messages for natural pacing
+  if (speechQueue.length > 0) {
+    setTimeout(processNextSpeech, 300);
+  }
+}
+
+function clearSpeechQueue() {
+  speechQueue.length = 0;
+  clearTimeout(speechTimeoutId);
+  isSpeaking = false;
+  currentTalkStream = null;
 }
 
 // ─── Background SW Message Handler ───────────────────────────────────────────
@@ -211,14 +295,14 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'CLARIFICATION':
       debugLog('← CLARIFICATION', message.text);
       addChatMessage('assistant', message.text);
-      speakThroughAvatar(message.text);
+      queueSpeech(message.text);
       updateStatus('listening', 'Waiting for your answer…');
       break;
 
     case 'SPEAK_RESPONSE':
       debugLog('← SPEAK_RESPONSE', message.text);
       addChatMessage('assistant', message.text);
-      speakThroughAvatar(message.text);
+      queueSpeech(message.text);
       updateStatus('listening', 'Done — ready for next instruction');
       break;
 
@@ -288,6 +372,7 @@ function toggleListening() {
     // Mute mic, stop any ongoing avatar speech, and pause heartbeat
     try { if (anamClient) anamClient.muteInputAudio(); } catch (e) { /* SDK may not be ready */ }
     try { if (anamClient) anamClient.interruptPersona(); } catch (e) { /* may not be streaming */ }
+    clearSpeechQueue();
     stopHeartbeat();
   }
 }
@@ -320,7 +405,6 @@ function sendManualInput() {
     text = text.substring(0, CONFIG.MAX_SPEECH_LENGTH);
   }
   input.value = '';
-  addChatMessage('user', text);
   handleUserSpeech(text);
 }
 

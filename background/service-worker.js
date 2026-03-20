@@ -42,6 +42,9 @@ Rules:
 11. BREVITY IS MANDATORY. Keep ALL responses under 2 sentences maximum. No filler phrases,
     no lengthy pleasantries. Everything you say is spoken aloud by an avatar — long responses
     are painful to listen to.
+12. NEVER regurgitate Lovable build details or technical status updates unless the user explicitly
+    asks "what's happening" or "what did Lovable do". The system handles status updates separately.
+    Focus your response on the conversational thread with the user.
 
 MID-BUILD BEHAVIOR — When [BUILD_STATE] says Lovable is currently building:
 Determine the user's intent and respond with the appropriate prefix:
@@ -109,8 +112,9 @@ Your job:
 2. Summarize it in ONE short sentence suitable for text-to-speech
 3. Always attribute work to Lovable — say "Lovable built..." or "Your page is ready..." — never "I created..." or "I built..."
 4. If a build failure is mentioned, clearly state that the build failed and what went wrong
-5. If the captured text is primarily an echo of the last prompt that was sent (the user's instruction repeated back), output only: [EMPTY]
-6. If there is no meaningful Lovable response in the text, output only: [EMPTY]
+5. Strip ALL technical details: never mention specific technologies, frameworks, libraries, or tools (React, Tailwind, TypeScript, Supabase, shadcn/ui, CSS, HTML, etc.). Focus on WHAT was built, not HOW.
+6. If the captured text is primarily an echo of the last prompt that was sent (the user's instruction repeated back), output only: [EMPTY]
+7. If there is no meaningful Lovable response in the text, output only: [EMPTY]
 
 Output ONLY the clean summary. No quotes, no preamble. ONE sentence maximum.`;
 
@@ -128,6 +132,7 @@ const API_COOLDOWN_MS = 2000;           // Min gap between Claude API calls
 const MAX_API_CALLS_PER_MINUTE = 15;    // Hard cap on calls per 60s window
 const STOP_REINJECT_DELAY_MS = 1500;    // Wait after stop before injecting corrected prompt
 const AUTO_INJECT_DELAY_MS = 300;       // Wait after auto-injecting content script before retry
+const BROADCAST_COALESCE_MS = 1200;     // Coalesce Lovable-originated speech within this window
 const STOP_PATTERN = /^(stop|cancel|halt|abort|stop it|stop building|cancel that|stop lovable|pause)$/i;
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -162,7 +167,8 @@ const state = {
   lastSentPrompt: '',
   pendingAction: null,
   awaitingConfirmation: false,
-  pendingLovableResponse: null
+  pendingLovableResponse: null,
+  pendingBroadcast: null           // { type, text, timer } coalescing buffer for Lovable speech
 };
 
 /** Reset all transient state (preserves readyTabs which tracks tab lifecycle separately) */
@@ -180,6 +186,8 @@ function resetState() {
   state.pendingAction = null;
   state.awaitingConfirmation = false;
   state.pendingLovableResponse = null;
+  if (state.pendingBroadcast) clearTimeout(state.pendingBroadcast.timer);
+  state.pendingBroadcast = null;
 }
 
 // Set of tab IDs that have confirmed their content script is loaded
@@ -273,8 +281,13 @@ async function callClaudeAPI({ systemPrompt, messages, maxTokens }) {
   });
 
   if (!response.ok) {
-    console.error('[FLB SW] Claude API error:', response.status);
-    throw new Error('Could not reach Claude. Check your internet connection and API key.');
+    let errorDetail = '';
+    try {
+      const errBody = await response.json();
+      errorDetail = errBody.error?.message || JSON.stringify(errBody);
+    } catch { errorDetail = response.statusText; }
+    console.error(`[FLB SW] Claude API error ${response.status}: ${errorDetail}`);
+    throw new Error(`Claude API ${response.status}: ${errorDetail}`);
   }
 
   const data = await response.json();
@@ -368,12 +381,12 @@ function summarizeAndSpeak(rawText) {
     .then(summary => {
       if (summary) {
         console.log('[FLB SW] Summarized response:', summary);
-        broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: summary });
+        coalescedBroadcast('SPEAK_RESPONSE', summary);
       }
     })
     .catch(err => {
       console.error('[FLB SW] Summarize failed, using raw text:', err.message);
-      broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: rawText });
+      coalescedBroadcast('SPEAK_RESPONSE', rawText);
     });
 }
 
@@ -492,7 +505,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.pendingAction = null;
           state.awaitingConfirmation = false;
           console.log('[FLB SW] Build finished — injecting queued prompt:', queuedPrompt);
-          broadcastToSidePanel({ type: 'SPEAK_RESPONSE', text: 'Lovable finished. Now sending your queued instruction.' });
+          coalescedBroadcast('SPEAK_RESPONSE', 'Lovable finished. Now sending your queued instruction.');
           injectAndBroadcast(queuedPrompt);
         } else if (state.pendingLovableResponse) {
           // Process deferred Lovable response now that build is done
@@ -501,10 +514,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.log('[FLB SW] Build finished — summarizing deferred response');
           summarizeAndSpeak(deferred);
         } else {
-          broadcastToSidePanel({
-            type: 'CLARIFICATION',
-            text: 'Lovable finished building. Ready for your next instruction.'
-          });
+          coalescedBroadcast('CLARIFICATION', 'Lovable finished building. Ready for your next instruction.');
         }
       }
 
@@ -753,7 +763,7 @@ function processUserSpeech(userText) {
       console.error('[FLB SW] Claude API error:', err);
       broadcastToSidePanel({
         type: 'CLARIFICATION',
-        text: "Sorry, I couldn't connect to Claude. Please check your API key in config.js."
+        text: `Claude error: ${err.message}`
       });
     });
 }
@@ -789,6 +799,28 @@ function broadcastToSidePanel(message) {
   chrome.runtime.sendMessage(message).catch(() => {
     // Side panel may not be open — ignore
   });
+}
+
+/**
+ * Coalesced broadcast for Lovable-originated speech. If another broadcast
+ * arrives within BROADCAST_COALESCE_MS, they merge into a single message
+ * so the avatar speaks one flowing sentence instead of two choppy ones.
+ * Only used for status/summary speech — not for direct Claude responses.
+ */
+function coalescedBroadcast(type, text) {
+  if (state.pendingBroadcast) {
+    clearTimeout(state.pendingBroadcast.timer);
+    state.pendingBroadcast.text += ' ' + text;
+    state.pendingBroadcast.type = type;
+  } else {
+    state.pendingBroadcast = { type, text };
+  }
+
+  state.pendingBroadcast.timer = setTimeout(() => {
+    const { type: finalType, text: finalText } = state.pendingBroadcast;
+    state.pendingBroadcast = null;
+    broadcastToSidePanel({ type: finalType, text: finalText });
+  }, BROADCAST_COALESCE_MS);
 }
 
 // Send a message to the content script running on Lovable
