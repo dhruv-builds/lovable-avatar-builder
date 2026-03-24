@@ -1,11 +1,10 @@
 # 🎙️ Facetime Lovable Builder
 
-> **Build web apps with your voice — powered by AI.**
+> **Have a FaceTime call with AI to build your web app.**
 
-A Chrome extension that lets you talk to an AI avatar to build apps on [Lovable.dev](https://lovable.dev). Speak a casual instruction, and the avatar reformulates it into an optimized prompt via Claude, injects it into Lovable's chat, and narrates Lovable's response back to you — hands-free.
+A Chrome extension that turns app building into a conversation. Talk face-to-face with an AI avatar on [Lovable.dev](https://lovable.dev) — describe what you want in plain language, course-correct mid-build, and let the avatar narrate every result back to you. No keyboard required.
 
-<!-- 🖼️ HERO SCREENSHOT — Replace with a screenshot of the extension side panel with the avatar active -->
-<!-- ![Facetime Lovable Builder](docs/screenshot-hero.png) -->
+![Facetime Lovable Builder](docs/screenshot-hero.png)
 
 ---
 
@@ -13,22 +12,20 @@ A Chrome extension that lets you talk to an AI avatar to build apps on [Lovable.
 
 | Feature | Description |
 |---------|-------------|
-| 🗣️ **Voice-Powered Building** | Speak naturally to an AI avatar — it captures your speech and drives Lovable for you |
+| 💬 **Conversational Building** | Talk naturally to an AI avatar — describe what you want and it drives Lovable for you |
+| 🔀 **Mid-Build Corrections** | Say "actually, change the color to blue" while Lovable is building — it stops and redirects |
+| 🔁 **Hands-Free Building Loop** | Speak → build → narrate → repeat — full cycle without touching the keyboard |
 | 🧠 **Intelligent Prompt Engineering** | Claude reformulates casual speech into optimized Lovable prompts |
 | 🧹 **Response Summarization** | Raw DOM output is cleaned and summarized into natural conversational sentences |
 | 🔄 **Auto-Recovery** | Detects build failures and automatically asks Lovable to diagnose and fix them |
 | 🛑 **Voice Stop Command** | Say "stop" or "cancel" to immediately halt Lovable's current build |
 | ⌨️ **Text Fallback** | Full functionality without a microphone — type instructions in the chat input |
-| 🎭 **Avatar Optional** | Works in text-only mode when Anam credentials are unavailable |
 
 ---
 
 ## 🎬 Demo
 
-<!-- 🎥 DEMO GIF — Replace with a GIF or video showing the full voice pipeline in action -->
-<!-- ![Demo](docs/demo.gif) -->
-
-*Coming soon — a recorded demo of the full voice pipeline with avatar.*
+▶️ [Watch the demo](https://www.linkedin.com/posts/sondhidhruv_conversationalai-activity-7442212489812992000-5ER4?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAMwgwABYDLh_IS3CxJdBMrL2YqgzrELQG8)
 
 ---
 
